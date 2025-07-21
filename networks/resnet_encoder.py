@@ -46,22 +46,20 @@ def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1):
     model = ResNetMultiImageInput(block_type, blocks, num_input_images=num_input_images)
 
     if pretrained:
-        from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weights
-
         if num_layers == 18:
-            weights = ResNet18_Weights.DEFAULT
+            resnet = models.resnet18(pretrained=True)
         elif num_layers == 34:
-            weights = ResNet34_Weights.DEFAULT
+            resnet = models.resnet34(pretrained=True)
         elif num_layers == 50:
-            weights = ResNet50_Weights.DEFAULT
+            resnet = models.resnet50(pretrained=True)
         else:
-            weights = None
+            raise ValueError("Unsupported ResNet layer count for pretrained weights.")
 
-        resnet = models.resnet18(weights=weights)
         loaded = resnet.state_dict()
         loaded['conv1.weight'] = torch.cat(
             [loaded['conv1.weight']] * num_input_images, 1) / num_input_images
         model.load_state_dict(loaded)
+
     return model
 
 
