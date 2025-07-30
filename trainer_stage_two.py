@@ -16,7 +16,6 @@ from tensorboardX import SummaryWriter
 
 class Trainer:
     def __init__(self, options):
-
         self.opt = options
         self.log_path = os.path.join(self.opt.log_dir, self.opt.model_name)
 
@@ -133,14 +132,14 @@ class Trainer:
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
             self.opt.frame_ids, 4, is_train=True, img_ext=img_ext)
         self.train_loader = DataLoader(
-            train_dataset, 1, True,
-            num_workers=0, pin_memory=True, drop_last=True)
+            train_dataset, self.opt.batch_size, True,
+            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
         val_dataset = self.dataset(
             self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
             self.opt.frame_ids, 4, is_train=False, img_ext=img_ext)
         self.val_loader = DataLoader(
-            val_dataset, 1, False,
-            num_workers=0, pin_memory=True, drop_last=True)
+            val_dataset, self.opt.batch_size, False,
+            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
         self.val_iter = iter(self.val_loader)
 
         self.writers = {}
