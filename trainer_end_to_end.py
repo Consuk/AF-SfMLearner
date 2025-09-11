@@ -12,9 +12,116 @@ from utils import *
 from layers import *
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
-
+try:
+    import wandb
+except Exception:
+    wandb = None
 
 class Trainer:
+    def _init_wandb(self):
+        self.wandb_enabled = False
+        if getattr(self.opt, "use_wandb", False) and (wandb is not None):
+            run_name = getattr(self.opt, "wandb_run_name", None) or self.opt.model_name
+            kwargs = dict(
+                project=getattr(self.opt, "wandb_project", "af-sfmlearner"),
+                name=run_name,
+                config=self.opt.__dict__,
+            )
+            entity = getattr(self.opt, "wandb_entity", None)
+            if entity:
+                kwargs["entity"] = entity
+            # Inicializa run
+            wandb.init(**kwargs)
+            # Loggea código si quieres: wandb.run.log_code(".")
+            # Observa gradientes/pesos (opcional, puede ser pesado):
+            # for m in self.models.values(): wandb.watch(m, log='gradients', log_freq=500)
+            self.wandb_enabled = True
+
+    @staticmethod
+    def _to_numpy_image(t, normalize=False):
+        """
+        t: torch.Tensor [C,H,W] en [0,1] o [1,H,W].
+        Devuelve np.uint8 [H,W,3] o [H,W] para wandb.Image.
+        """
+        x = t.detach().cpu().float()
+        if normalize:
+            x = (x - x.min()) / (x.max() - x.min() + 1e-8)
+        if x.ndim == 3 and x.shape[0] == 3:
+            img = (x.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+            return img
+        elif x.ndim == 3 and x.shape[0] == 1:
+            img = (x.squeeze(0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+            return img  # gris [H,W]
+        elif x.ndim == 2:
+            img = (x.clamp(0, 1).numpy() * 255).astype(np.uint8)
+            return img
+        else:
+            # fallback: intenta colapsar a 3 canales repitiendo
+            if x.ndim == 3:
+                x = x[:1]  # usa 1 canal
+                img = (x.squeeze(0).clamp(0, 1).numpy() * 255).astype(np.uint8)
+                return img
+            raise ValueError("Formato de imagen no soportado para W&B")
+
+    def _wandb_log(self, losses, inputs, outputs):
+        """Log scalars + imágenes a W&B."""
+        if not getattr(self, "wandb_enabled", False):
+            return
+
+        log_dict = {}
+        # 1) Scalars (losses)
+        for l, v in losses.items():
+            try:
+                log_dict[l] = float(v.detach().cpu().item()) if hasattr(v, "detach") else float(v)
+            except Exception:
+                pass
+
+        # 2) Imágenes (limitar para no saturar W&B)
+        max_imgs = min(2, self.opt.batch_size)  # 2 imágenes por batch
+        scales_to_show = [0]  # solo scale 0 para claridad/ligereza
+        frame_ids = [fid for fid in self.opt.frame_ids[1:] if fid != "s"]
+
+        imgs_to_log = {}
+        for j in range(max_imgs):
+            # Input anchor
+            try:
+                anchor = self._to_numpy_image(inputs[("color", 0, 0)][j], normalize=False)
+                imgs_to_log[f"input/anchor/{j}"] = wandb.Image(anchor, caption=f"input_anchor_{j}")
+            except Exception:
+                pass
+
+            for s in scales_to_show:
+                for fid in frame_ids:
+                    # registration
+                    try:
+                        reg = self._to_numpy_image(outputs[("registration", s, fid)][j], normalize=False)
+                        imgs_to_log[f"registration/f{fid}_s{s}/{j}"] = wandb.Image(reg)
+                    except Exception:
+                        pass
+                    # refined
+                    try:
+                        refi = self._to_numpy_image(outputs[("refined", s, fid)][j], normalize=False)
+                        imgs_to_log[f"refined/f{fid}_s{s}/{j}"] = wandb.Image(refi)
+                    except Exception:
+                        pass
+                    # transform (high)
+                    try:
+                        trn = self._to_numpy_image(outputs[("transform", "high", s, fid)][j], normalize=False)
+                        imgs_to_log[f"transform_high/f{fid}_s{s}/{j}"] = wandb.Image(trn)
+                    except Exception:
+                        pass
+
+                # disparity (normalizada)
+                try:
+                    disp = self._to_numpy_image(normalize_image(outputs[("disp", s)][j]), normalize=False)
+                    imgs_to_log[f"disp/s{s}/{j}"] = wandb.Image(disp, caption=f"disp_s{s}_{j}")
+                except Exception:
+                    pass
+
+        # Une y envía
+        log_dict.update(imgs_to_log)
+        wandb.log(log_dict, step=self.step)
+
     def __init__(self, options):
         self.opt = options
         self.log_path = os.path.join(self.opt.log_dir, self.opt.model_name)
@@ -151,6 +258,7 @@ class Trainer:
         self.writers = {}
         for mode in ["train", "val"]:
             self.writers[mode] = SummaryWriter(os.path.join(self.log_path, mode))
+        self._init_wandb()
 
         if not self.opt.no_ssim:
             self.ssim = SSIM()
@@ -743,6 +851,7 @@ class Trainer:
                 writer.add_image(
                     "disp_{}/{}".format(s, j),
                     normalize_image(outputs[("disp", s)][j]), self.step)
+                self._wandb_log(losses, inputs, outputs)
 
     def save_opts(self):
         """Save options to disk so we know what we ran this experiment with
