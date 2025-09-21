@@ -6,10 +6,13 @@ import torch.nn as nn
 
 from collections import OrderedDict
 from layers import *
+from torch.utils.checkpoint import checkpoint
+
 
 
 class TransformDecoder(nn.Module):
     def __init__(self, num_ch_enc, scales = range(4) , num_output_channels=3, use_skips=True):
+        self._use_ckpt = True
         super(TransformDecoder, self).__init__()
 
         self.num_output_channels = num_output_channels
@@ -43,16 +46,34 @@ class TransformDecoder(nn.Module):
 
     def forward(self, input_features):
         self.outputs = {}
-        # decoder
         x = input_features[-1]
+
         for i in range(4, -1, -1):
-            x = self.convs[("upconv", i, 0)](x)
+            # upconv (i, 0)
+            if self.training and self._use_ckpt and x.is_cuda and x.requires_grad:
+                x = checkpoint(lambda y, ii=i: self.convs[("upconv", ii, 0)](y), x)
+            else:
+                x = self.convs[("upconv", i, 0)](x)
+
+            # skip & concat
             x = [upsample(x)]
             if self.use_skips and i > 0:
                 x += [input_features[i - 1]]
             x = torch.cat(x, 1)
-            x = self.convs[("upconv", i, 1)](x)
+
+            # upconv (i, 1)
+            if self.training and self._use_ckpt and x.is_cuda and x.requires_grad:
+                x = checkpoint(lambda y, ii=i: self.convs[("upconv", ii, 1)](y), x)
+            else:
+                x = self.convs[("upconv", i, 1)](x)
+
+            # salida a cada escala
             if i in self.scales:
-                self.outputs[("transform", i)] = self.Tanh(self.convs[("transform_conv", i)](x))
+                if self.training and self._use_ckpt and x.is_cuda and x.requires_grad:
+                    t_out = checkpoint(lambda y, ss=i: self.convs[("transform_conv", ss)](y), x)
+                else:
+                    t_out = self.convs[("transform_conv", i)](x)
+                self.outputs[("transform", i)] = self.Tanh(t_out)
 
         return self.outputs
+

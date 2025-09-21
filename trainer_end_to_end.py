@@ -385,7 +385,6 @@ class Trainer:
     def run_epoch(self):
         """Run a single epoch of training and validation
         """
-
         print("Training")
 
         for batch_idx, inputs in enumerate(self.train_loader):
@@ -398,6 +397,12 @@ class Trainer:
             self.model_optimizer_0.zero_grad()
             losses_0["loss"].backward()
             self.model_optimizer_0.step()
+            import gc, torch
+            del losses_0
+            gc.collect()
+            if torch.cuda.is_available() and not self.opt.no_cuda:
+                torch.cuda.empty_cache()
+
 
             # depth, pose, transform
             self.set_train()
