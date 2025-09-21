@@ -220,6 +220,15 @@ class MonodepthOptions:
                                  help="if set will perform the flipping post processing "
                                       "from the original monodepth paper",
                                  action="store_true")
+        self.parser.add_argument("--use_wandb", action="store_true",
+                              help="Enable Weights & Biases logging")
+        self.parser.add_argument("--wandb_project", type=str, default="af-sfmlearner",
+                              help="W&B project name")
+        self.parser.add_argument("--wandb_entity", type=str, default=None,
+                              help="W&B entity/org (optional)")
+        self.parser.add_argument("--wandb_run_name", type=str, default=None,
+                              help="W&B run name (optional)")
+
 
     def parse(self):
         self.options = self.parser.parse_args()
