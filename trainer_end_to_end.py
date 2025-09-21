@@ -12,6 +12,9 @@ from utils import *
 from layers import *
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
+import gc
+import torch
+
 try:
     import wandb
 except Exception:
@@ -397,7 +400,6 @@ class Trainer:
             self.model_optimizer_0.zero_grad()
             losses_0["loss"].backward()
             self.model_optimizer_0.step()
-            import gc, torch
             del losses_0
             gc.collect()
             if torch.cuda.is_available() and not self.opt.no_cuda:

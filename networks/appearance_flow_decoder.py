@@ -49,8 +49,13 @@ class TransformDecoder(nn.Module):
         x = input_features[-1]
 
         for i in range(4, -1, -1):
+            use_ckpt = (
+                self.training and getattr(self, "_use_ckpt", True)
+                and isinstance(x, torch.Tensor) and x.is_cuda and x.requires_grad
+            )
+
             # upconv (i, 0)
-            if self.training and self._use_ckpt and x.is_cuda and x.requires_grad:
+            if use_ckpt:
                 x = checkpoint(lambda y, ii=i: self.convs[("upconv", ii, 0)](y), x)
             else:
                 x = self.convs[("upconv", i, 0)](x)
@@ -62,14 +67,14 @@ class TransformDecoder(nn.Module):
             x = torch.cat(x, 1)
 
             # upconv (i, 1)
-            if self.training and self._use_ckpt and x.is_cuda and x.requires_grad:
+            if use_ckpt:
                 x = checkpoint(lambda y, ii=i: self.convs[("upconv", ii, 1)](y), x)
             else:
                 x = self.convs[("upconv", i, 1)](x)
 
             # salida a cada escala
             if i in self.scales:
-                if self.training and self._use_ckpt and x.is_cuda and x.requires_grad:
+                if use_ckpt:
                     t_out = checkpoint(lambda y, ss=i: self.convs[("transform_conv", ss)](y), x)
                 else:
                     t_out = self.convs[("transform_conv", i)](x)
