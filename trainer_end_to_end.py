@@ -7,6 +7,7 @@ import networks
 import numpy as np
 import torch.optim as optim
 import torch.nn as nn
+from torch.cuda.amp import autocast
 
 from utils import *
 from layers import *
@@ -441,16 +442,13 @@ class Trainer:
         return outputs, losses
 
     def predict_poses_0(self, inputs):
-        """Predict poses between input frames for monocular sequences.
-        """
+        """Predict poses between input frames for monocular sequences (stage 0)."""
         outputs = {}
         if self.num_pose_frames == 2:
             pose_feats = {f_i: inputs["color_aug", f_i, 0] for f_i in self.opt.frame_ids}
 
             for f_i in self.opt.frame_ids[1:]:
-
                 if f_i != "s":
-
                     inputs_all = [pose_feats[f_i], pose_feats[0]]
                     inputs_all_reverse = [pose_feats[0], pose_feats[f_i]]
 
@@ -463,37 +461,56 @@ class Trainer:
                     for scale in self.opt.scales:
                         outputs[("position", scale, f_i)] = outputs_0[("position", scale)]
                         outputs[("position", "high", scale, f_i)] = F.interpolate(
-                            outputs[("position", scale, f_i)], [self.opt.height, self.opt.width], mode="bilinear",
-                            align_corners=False)
-                        outputs[("registration", scale, f_i)] = self.spatial_transform(inputs[("color", f_i, 0)],
-                                                                                       outputs[(
-                                                                                       "position", "high", scale, f_i)])
+                            outputs[("position", scale, f_i)],
+                            [self.opt.height, self.opt.width], mode="bilinear", align_corners=False
+                        )
+                        outputs[("registration", scale, f_i)] = self.spatial_transform(
+                            inputs[("color", f_i, 0)],
+                            outputs[("position", "high", scale, f_i)]
+                        )
 
                         outputs[("position_reverse", scale, f_i)] = outputs_1[("position", scale)]
                         outputs[("position_reverse", "high", scale, f_i)] = F.interpolate(
-                            outputs[("position_reverse", scale, f_i)], [self.opt.height, self.opt.width],
-                            mode="bilinear", align_corners=False)
+                            outputs[("position_reverse", scale, f_i)],
+                            [self.opt.height, self.opt.width], mode="bilinear", align_corners=False
+                        )
                         outputs[("occu_mask_backward", scale, f_i)], _ = self.get_occu_mask_backward(
-                            outputs[("position_reverse", "high", scale, f_i)])
+                            outputs[("position_reverse", "high", scale, f_i)]
+                        )
                         outputs[("occu_map_bidirection", scale, f_i)] = self.get_occu_mask_bidirection(
                             outputs[("position", "high", scale, f_i)],
-                            outputs[("position_reverse", "high", scale, f_i)])
+                            outputs[("position_reverse", "high", scale, f_i)]
+                        )
 
-                    # transform
-                    transform_input = [outputs[("registration", 0, f_i)], inputs[("color", 0, 0)]]
-                    transform_inputs = self.models["transform_encoder"](torch.cat(transform_input, 1))
-                    outputs_2 = self.models["transform"](transform_inputs)
+                    # ---------- TRANSFORM (inference-only en stage 0) ----------
+                    # Sin gradiente y con AMP para bajar el pico de VRAM
+                    with torch.no_grad():
+                        use_amp = (not self.opt.no_cuda) and torch.cuda.is_available()
+                        with autocast(enabled=use_amp):
+                            t_in = torch.cat(
+                                [outputs[("registration", 0, f_i)], inputs[("color", 0, 0)]],
+                                dim=1
+                            )
+                            t_feat = self.models["transform_encoder"](t_in)
+                            t_outs = self.models["transform"](t_feat)
 
-                    for scale in self.opt.scales:
-                        outputs[("transform", scale, f_i)] = outputs_2[("transform", scale)]
-                        outputs[("transform", "high", scale, f_i)] = F.interpolate(
-                            outputs[("transform", scale, f_i)], [self.opt.height, self.opt.width], mode="bilinear",
-                            align_corners=False)
-                        outputs[("refined", scale, f_i)] = (outputs[("transform", "high", scale, f_i)] * outputs[
-                            ("occu_mask_backward", 0, f_i)].detach() + inputs[("color", 0, 0)])
-                        outputs[("refined", scale, f_i)] = torch.clamp(outputs[("refined", scale, f_i)], min=0.0,
-                                                                       max=1.0)
+                        for scale in self.opt.scales:
+                            t_high = F.interpolate(
+                                t_outs[("transform", scale)].float(),
+                                [self.opt.height, self.opt.width], mode="bilinear", align_corners=False
+                            )
+                            refined = (
+                                t_high * outputs[("occu_mask_backward", 0, f_i)].detach()
+                                + inputs[("color", 0, 0)]
+                            )
+                            outputs[("refined", scale, f_i)] = torch.clamp(refined, 0.0, 1.0)
+
+                        # No guardamos ("transform", ...) en stage 0 para no ocupar VRAM
+                        del t_outs, t_feat, t_in
+                    # ----------------------------------------------------------
+
         return outputs
+
 
     def compute_losses_0(self, inputs, outputs):
 
@@ -749,22 +766,9 @@ class Trainer:
             inputs = self.val_iter.next()
 
         with torch.no_grad():
-            transform_input = [outputs[("registration", 0, f_i)], inputs[("color", 0, 0)]]
-            t_in = torch.cat(transform_input, 1)
-            t_feat = self.models["transform_encoder"](t_in)
-            t_outs = self.models["transform"](t_feat)
-
-            for scale in self.opt.scales:
-                t_high = F.interpolate(
-                    t_outs[("transform", scale)],
-                    [self.opt.height, self.opt.width], mode="bilinear", align_corners=False
-                )
-                refined = (t_high * outputs[("occu_mask_backward", 0, f_i)].detach()
-                        + inputs[("color", 0, 0)])
-                outputs[("refined", scale, f_i)] = torch.clamp(refined, 0.0, 1.0)
-
-            del t_outs, t_feat, t_in
-
+            outputs, losses = self.process_batch_val(inputs)
+            self.log("val", inputs, outputs, losses)
+            del inputs, outputs, losses
 
         self.set_train()
 
