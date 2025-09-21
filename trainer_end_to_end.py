@@ -749,9 +749,22 @@ class Trainer:
             inputs = self.val_iter.next()
 
         with torch.no_grad():
-            outputs, losses = self.process_batch_val(inputs)
-            self.log("val", inputs, outputs, losses)
-            del inputs, outputs, losses
+            transform_input = [outputs[("registration", 0, f_i)], inputs[("color", 0, 0)]]
+            t_in = torch.cat(transform_input, 1)
+            t_feat = self.models["transform_encoder"](t_in)
+            t_outs = self.models["transform"](t_feat)
+
+            for scale in self.opt.scales:
+                t_high = F.interpolate(
+                    t_outs[("transform", scale)],
+                    [self.opt.height, self.opt.width], mode="bilinear", align_corners=False
+                )
+                refined = (t_high * outputs[("occu_mask_backward", 0, f_i)].detach()
+                        + inputs[("color", 0, 0)])
+                outputs[("refined", scale, f_i)] = torch.clamp(refined, 0.0, 1.0)
+
+            del t_outs, t_feat, t_in
+
 
         self.set_train()
 
