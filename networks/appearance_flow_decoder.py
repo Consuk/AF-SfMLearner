@@ -72,7 +72,7 @@ class TransformDecoder(nn.Module):
             else:
                 x = self.convs[("upconv", i, 1)](x)
 
-            # salida a cada escala
+            # salida por escala
             if i in self.scales:
                 if use_ckpt:
                     t_out = checkpoint(lambda y, ss=i: self.convs[("transform_conv", ss)](y), x)

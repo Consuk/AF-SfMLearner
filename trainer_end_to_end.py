@@ -44,8 +44,7 @@ class Trainer:
     @staticmethod
     def _to_numpy_image(t, normalize=False):
         """
-        t: torch.Tensor [C,H,W] en [0,1] o [1,H,W].
-        Devuelve np.uint8 [H,W,3] o [H,W] para wandb.Image.
+        Convierte tensores [C,H,W] a imágenes np.uint8 [H,W,3] o [H,W]
         """
         x = t.detach().cpu().float()
         if normalize:
@@ -54,18 +53,17 @@ class Trainer:
             img = (x.permute(1, 2, 0).clamp(0, 1).numpy() * 255).astype(np.uint8)
             return img
         elif x.ndim == 3 and x.shape[0] == 1:
+            # 👇 Forzamos 3 canales para que wandb los interprete como RGB
             img = (x.squeeze(0).clamp(0, 1).numpy() * 255).astype(np.uint8)
-            return img  # gris [H,W]
+            img = np.stack([img] * 3, axis=-1)  # RGB fake
+            return img
         elif x.ndim == 2:
             img = (x.clamp(0, 1).numpy() * 255).astype(np.uint8)
+            img = np.stack([img] * 3, axis=-1)  # RGB fake
             return img
         else:
-            # fallback: intenta colapsar a 3 canales repitiendo
-            if x.ndim == 3:
-                x = x[:1]  # usa 1 canal
-                img = (x.squeeze(0).clamp(0, 1).numpy() * 255).astype(np.uint8)
-                return img
             raise ValueError("Formato de imagen no soportado para W&B")
+
 
     def _wandb_log(self, losses, inputs, outputs):
         """Log scalars + imágenes a W&B."""
