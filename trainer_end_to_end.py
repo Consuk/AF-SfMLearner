@@ -8,6 +8,8 @@ import numpy as np
 import torch.optim as optim
 import torch.nn as nn
 from torch.cuda.amp import autocast
+import matplotlib.cm as cm
+
 
 from utils import *
 from layers import *
@@ -40,6 +42,27 @@ class Trainer:
             # Observa gradientes/pesos (opcional, puede ser pesado):
             # for m in self.models.values(): wandb.watch(m, log='gradients', log_freq=500)
             self.wandb_enabled = True
+
+    import matplotlib.cm as cm
+
+    @staticmethod
+    def tensor2array(tensor, colormap='magma'):
+        """
+        Convierte tensor a imagen RGB numpy para logging.
+        """
+        array = tensor.detach().cpu().squeeze().float().numpy()
+        array = (array - array.min()) / (array.max() - array.min() + 1e-8)
+
+        if array.ndim == 2:
+            cmap = cm.get_cmap(colormap)
+            colored = cmap(array)[:, :, :3]  # quitar alpha
+            return (colored * 255).astype(np.uint8)
+        elif array.ndim == 3:
+            return (np.transpose(array, (1, 2, 0)) * 255).astype(np.uint8)
+        else:
+            raise ValueError("Formato de tensor no compatible con imagen.")
+
+
 
     @staticmethod
     def _to_numpy_image(t, normalize=False):
@@ -115,8 +138,9 @@ class Trainer:
 
                 # disparity (normalizada)
                 try:
-                    disp = self._to_numpy_image(normalize_image(outputs[("disp", s)][j]), normalize=False)
+                    disp = self.tensor2array(outputs[("disp", s)][j], colormap='magma')
                     imgs_to_log[f"disp/s{s}/{j}"] = wandb.Image(disp, caption=f"disp_s{s}_{j}")
+
                 except Exception:
                     pass
 
