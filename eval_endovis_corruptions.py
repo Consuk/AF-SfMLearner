@@ -6,6 +6,8 @@ import csv
 import numpy as np
 import cv2
 from collections import defaultdict
+from datasets import SCAREDRAWDataset
+
 
 import torch
 from torch.utils.data import DataLoader
@@ -165,7 +167,7 @@ def evaluate_one_root(data_path_root,
     # 1) construir dataset con el parser original
     img_ext = '.png' if png else '.jpg'
     try:
-        dataset = datasets.SCAREDRAWDataset(
+        dataset = SCAREDRAWDataset(
             data_path_root, filenames, height, width,
             [0], 4, is_train=False, img_ext=img_ext
         )
