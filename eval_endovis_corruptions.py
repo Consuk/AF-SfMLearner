@@ -149,53 +149,99 @@ def evaluate_one_root(data_path_root,
                       height=256,
                       width=320,
                       batch_size=16,
-                      num_workers=4,
+                      num_workers=4,       # se ignora en este flujo manual
                       png=False,
                       disable_median_scaling=False,
                       pred_depth_scale_factor=1.0,
                       strict=False,
                       device="cuda"):
     """
-    Evalúa una raíz (p.ej., .../brightness/severity_1/endovis_data).
-    - Alinea GT por índices válidos, conservando orden del split.
-    - strict: exige 100% de coincidencias con el split.
+    Evalúa una raíz (p.ej., .../brightness/severity_1/endovis_data) usando
+    EXACTAMENTE el parser de rutas de SCAREDRAWDataset. Evita DataLoader
+    para poder saltar muestras que falten o fallen al cargar.
+    - strict=True  -> exige que TODAS las entradas del split carguen; de lo contrario lanza.
+    - strict=False -> procesa sólo las que se puedan cargar (lenient).
     """
-    # 1) traducir split->rutas reales (strict / lenient)
-    idx_keep, real_paths, missing = map_split_to_existing_paths(
-        data_path_root, filenames, png=png, strict=strict
-    )
+    # 1) construir dataset con el parser original
+    img_ext = '.png' if png else '.jpg'
+    try:
+        dataset = datasets.SCAREDRAWDataset(
+            data_path_root, filenames, height, width,
+            [0], 4, is_train=False, img_ext=img_ext
+        )
+    except Exception as e:
+        raise RuntimeError(f"No se pudo inicializar SCAREDRAWDataset en {data_path_root}: {e}")
 
-    if len(real_paths) == 0:
+    n = len(filenames)
+    kept_indices = []          # índices (del split) que sí se pudieron cargar
+    preds_list   = []          # predicciones por bloque (se concatenan al final)
+
+    # 2) bucle manual por índice: cargar -> apilar -> inferir en lotes
+    buffer_imgs = []
+    buffer_ids  = []
+
+    def flush_buffer():
+        """Corre inferencia sobre el buffer actual y guarda las disps."""
+        if len(buffer_imgs) == 0:
+            return
+        with torch.no_grad():
+            batch = torch.stack(buffer_imgs, dim=0).to(device)  # [B,3,H,W]
+            feats = encoder(batch)
+            out   = depth_decoder(feats)
+            pred_disp, _ = disp_to_depth(out[("disp", 0)], 1e-3, 80)
+            preds_list.append(pred_disp[:, 0].cpu().numpy())
+
+    missing = 0
+    for i in range(n):
+        try:
+            sample = dataset[i]  # usa el parser/tokenización propia del dataset
+            img_t  = sample[("color", 0, 0)]  # tensor [3,H,W] en [0..1]
+            if not isinstance(img_t, torch.Tensor):
+                img_t = torch.as_tensor(img_t)
+            buffer_imgs.append(img_t)
+            buffer_ids.append(i)
+
+            if len(buffer_imgs) == batch_size:
+                flush_buffer()
+                kept_indices.extend(buffer_ids)
+                buffer_imgs.clear()
+                buffer_ids.clear()
+
+        except FileNotFoundError:
+            missing += 1
+            if strict:
+                raise FileNotFoundError(
+                    f"[STRICT] Falta la muestra del split idx={i} en {data_path_root}"
+                )
+            # lenient: la saltamos
+        except Exception as e:
+            missing += 1
+            if strict:
+                raise RuntimeError(
+                    f"[STRICT] Error cargando idx={i} en {data_path_root}: {e}"
+                )
+            # lenient: la saltamos
+
+    # último flush si quedó algo en buffer
+    flush_buffer()
+    kept_indices.extend(buffer_ids)
+
+    if len(kept_indices) == 0:
         mode = "STRICT" if strict else "LENIENT"
         raise FileNotFoundError(
-            f"[{mode}] Ninguna imagen encontrada en {data_path_root} tras mapear tokens del split."
+            f"[{mode}] Ninguna imagen utilizable en {data_path_root} con el parser del dataset "
+            f"(faltantes/errores: {missing}/{n})."
         )
 
-    if (not strict) and len(missing) > 0:
-        # Aviso informativo para modo lenient
-        print(f"   [INFO] {data_path_root}: usando {len(real_paths)}/{len(filenames)} frames del split "
-              f"(faltan {len(missing)}).")
+    if (not strict) and missing > 0:
+        print(f"   [INFO] {data_path_root}: usando {len(kept_indices)}/{n} frames del split "
+              f"(faltaron {missing}).")
 
-    # 2) dataset reducido a las muestras válidas
-    dataset = SimpleImageDataset(real_paths, height, width)
-    dataloader = DataLoader(dataset, batch_size, shuffle=False,
-                            num_workers=num_workers, pin_memory=True, drop_last=False)
+    # 3) concatenar predicciones y alinear GT con kept_indices
+    pred_disps = np.concatenate(preds_list, axis=0)  # [M,H',W'] en disp-normalizada
+    sel_gt     = gt_depths[kept_indices]
 
-    # 3) forward
-    pred_disps = []
-    with torch.no_grad():
-        for data in dataloader:
-            input_color = data[("color", 0, 0)].to(device)
-            features = encoder(input_color)
-            output = depth_decoder(features)
-            pred_disp, _ = disp_to_depth(output[("disp", 0)], 1e-3, 80)  # mismos rangos que base
-            pred_disps.append(pred_disp[:, 0].cpu().numpy())
-    pred_disps = np.concatenate(pred_disps, axis=0)
-
-    # 4) alinear GT usando los mismos índices válidos
-    sel_gt = gt_depths[idx_keep]
-
-    # 5) métricas
+    # 4) métrica por muestra y promedio, idéntico a tu evaluate base
     errors, ratios = [], []
     for i in range(pred_disps.shape[0]):
         gt_depth = sel_gt[i]
@@ -230,6 +276,7 @@ def evaluate_one_root(data_path_root,
     mean_errors = np.array(errors).mean(0)
     # abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
     return mean_errors
+
 
 
 def list_corruption_dirs(root):
