@@ -31,7 +31,8 @@ import cv2
 from PIL import Image as pil
 
 # Import MonoDataset from the top-level module
-from mono_dataset import MonoDataset
+from datasets.mono_dataset import MonoDataset
+
 
 
 class HamlynDataset(MonoDataset):
