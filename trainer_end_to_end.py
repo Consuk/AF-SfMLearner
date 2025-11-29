@@ -256,7 +256,7 @@ class Trainer:
         print("Training is using:\n  ", self.device)
 
         # data
-        datasets_dict = {"endovis": datasets.SCAREDRAWDataset}
+        datasets_dict = {"endovis": datasets.SCAREDRAWDataset, "hamlyn": datasets.HamlynDataset}
         self.dataset = datasets_dict[self.opt.dataset]
 
         fpath = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "{}_files.txt")

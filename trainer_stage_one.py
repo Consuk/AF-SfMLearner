@@ -4,6 +4,8 @@ from __future__ import absolute_import, division, print_function
 import time
 import json
 import datasets
+import torch  # required for operations such as torch.cat
+import torch.nn.functional as F  # required for F.interpolate
 import networks
 import torch.optim as optim
 
@@ -49,14 +51,43 @@ class Trainer:
         print("Models and tensorboard events files are saved to:\n  ", self.opt.log_dir)
         print("Training is using:\n  ", self.device)
 
-        # data
-        datasets_dict = {"endovis": datasets.SCAREDRAWDataset}
-        self.dataset = datasets_dict[self.opt.dataset]
+        # ------------------------------------------------------------------
+        # Dataset selection and split reading
+        #
+        # Use the global dataset_dict provided by the datasets package.  It
+        # maps dataset names (e.g. 'endovis', 'hamlyn') to their loader
+        # classes.  This avoids hard-coding the mapping here.
+        if not hasattr(datasets, 'dataset_dict'):
+            raise ValueError(
+                "The 'datasets' module does not define 'dataset_dict'. Ensure you have imported the correct package."
+            )
+        if self.opt.dataset not in datasets.dataset_dict:
+            raise ValueError(
+                f"Unknown dataset '{self.opt.dataset}'. Available options: {list(datasets.dataset_dict.keys())}"
+            )
+        self.dataset = datasets.dataset_dict[self.opt.dataset]
 
-        fpath = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "{}_files.txt")
-        train_filenames = readlines(fpath.format("train"))
-        val_filenames = readlines(fpath.format("val"))
-        img_ext = '.jpg'  # if self.opt.png else '.jpg'
+        # Determine the correct split file locations.  For the Hamlyn dataset
+        # the train/val file lists live in a 'splits' folder adjacent to the
+        # Hamlyn data.  For other datasets (e.g. SCARED) we use the local
+        # 'splits/<split>' folder within the repository.
+        if self.opt.dataset == "hamlyn":
+            split_dir = os.path.normpath(os.path.join(self.opt.data_path, "..", "splits"))
+            train_split_file = os.path.join(split_dir, "train_files_hamlyn.txt")
+            val_split_file = os.path.join(split_dir, "val_files_hamlyn.txt")
+            if not (os.path.exists(train_split_file) and os.path.exists(val_split_file)):
+                raise FileNotFoundError(
+                    f"Hamlyn split files not found. Expected to find them in {split_dir}. "
+                    "Make sure train_files_hamlyn.txt and val_files_hamlyn.txt exist."
+                )
+            train_filenames = readlines(train_split_file)
+            val_filenames = readlines(val_split_file)
+            img_ext = '.jpg'
+        else:
+            fpath = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "{}_files.txt")
+            train_filenames = readlines(fpath.format("train"))
+            val_filenames = readlines(fpath.format("val"))
+            img_ext = '.jpg'
 
         num_train_samples = len(train_filenames)
         self.num_total_steps = num_train_samples // self.opt.batch_size * self.opt.num_epochs
@@ -300,7 +331,7 @@ class Trainer:
         for l, v in losses.items():
             writer.add_scalar("{}".format(l), v, self.step)
 
-        for j in range(min(4, self.opt.batch_size)):  # write a maxmimum of four images
+        for j in range(min(4, self.opt.batch_size)):  # write a maximum of four images
             for s in self.opt.scales:
                 for frame_id in self.opt.frame_ids[1:]:
                     writer.add_image(
