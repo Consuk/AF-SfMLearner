@@ -11,10 +11,10 @@ additional datasets in this file makes them available from the top level.
 
 # Import datasets so they are available at the package root.  When
 # adding new datasets, import them here and update ``__all__`` below.
-from .scared_dataset import SCAREDRAWDataset  # noqa: F401
-from .hamlyn_dataset import HamlynDataset    # noqa: F401
+from .scared_dataset import SCAREDRAWDataset
+from .hamlyn_dataset import HamlynDataset
 
-__all__ = [
-    "SCAREDRAWDataset",
-    "HamlynDataset",
-]
+dataset_dict = {
+    "endovis": SCAREDRAWDataset,
+    "hamlyn": HamlynDataset
+}
