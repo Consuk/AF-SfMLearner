@@ -44,11 +44,12 @@ class HamlynDataset(MonoDataset):
         # fx = fy = 700 (64×48 sensor), cx=cy centred.  The loader rescales
         # this to the resolution set via --height and --width.
         self.K = np.array([
-            [0.7000, 0.0, 0.5, 0.0],
-            [0.0, 0.7000, 0.5, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0]
+            [1.2270, 0.0,    0.5296, 0.0],
+            [0.0,    1.2067, 0.4012, 0.0],
+            [0.0,    0.0,    1.0,    0.0],
+            [0.0,    0.0,    0.0,    1.0]
         ], dtype=np.float32)
+
         # Map side indicators to indices (unused here but provided for completeness)
         self.side_map = {"l": 2, "r": 3}
 
