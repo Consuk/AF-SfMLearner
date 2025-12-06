@@ -73,8 +73,13 @@ class HamlynDataset(MonoDataset):
         return folder, frame_index, side
 
     def get_image_path(self, folder, frame_index, side):
-        """Compose the absolute path to an image, appending the file extension."""
-        return os.path.join(self.data_path, folder) + self.img_ext
+        """
+        Compose the absolute path to an image, including the frame index.
+        Example output:
+        /workspace/datasets/hamlyn/Hamlyn/rectified15/rectified15/image01/0000000001.jpg
+        """
+        frame_str = f"{frame_index:010d}"  # 1 -> "0000000001"
+        return os.path.join(self.data_path, folder, frame_str + self.img_ext)
 
     def get_color(self, folder, frame_index, side, do_flip):
         """Load an RGB image and optionally flip it horizontally."""
