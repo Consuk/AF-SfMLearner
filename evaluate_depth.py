@@ -77,6 +77,37 @@ def batch_post_process_disparity(l_disp, r_disp):
     r_mask = l_mask[:, :, ::-1]
     return r_mask * l_disp + l_mask * r_disp + (1.0 - l_mask - r_mask) * m_disp
 
+def build_eval_dataset(opt, filenames):
+    """
+    Creates the correct dataset object for evaluation, depending on eval_split.
+    - For Hamlyn: use HamlynDataset (custom class).
+    - Otherwise: fall back to SCAREDRAWDataset (or whatever you were using).
+    """
+    HEIGHT, WIDTH = 256, 320   # or opt.height / opt.width if you prefer
+    img_ext = '.png' if opt.png else '.jpg'
+
+    # --- Hamlyn-specific path ---
+    if opt.eval_split == "hamlyn":
+        DatasetClass = datasets.HamlynDataset
+        print("-> Using HamlynDataset for evaluation")
+    else:
+        # Default / legacy behaviour (SCARED, etc.)
+        DatasetClass = datasets.SCAREDRAWDataset
+        print("-> Using SCAREDRAWDataset for evaluation (eval_split = {})".format(opt.eval_split))
+
+    dataset = DatasetClass(
+        opt.data_path,
+        filenames,
+        HEIGHT,
+        WIDTH,
+        [0],          # frame_idxs: only current frame
+        4,            # num_scales
+        is_train=False,
+        img_ext=img_ext
+    )
+
+    return dataset
+
 
 def evaluate(opt):
     """Evaluates a pretrained model using a specified test set
@@ -105,13 +136,16 @@ def evaluate(opt):
         #self.opt.height
         #encoder_dict2 = torch.load(encoder_path2)
         img_ext = '.png' if opt.png else '.jpg'
-        dataset = datasets.SCAREDRAWDataset(opt.data_path, filenames,
-                                           HEIGHT, WIDTH,
-                                           [0], 4, is_train=False, img_ext=img_ext)
+        dataset = build_eval_dataset(opt, filenames)
 
-        
-        dataloader = DataLoader(dataset, 16, shuffle=False, num_workers=opt.num_workers,
-                                pin_memory=True, drop_last=False)
+        dataloader = DataLoader(
+            dataset,
+            16,
+            shuffle=False,
+            num_workers=opt.num_workers,
+            pin_memory=True,
+            drop_last=False
+        )
 
         encoder = networks.ResnetEncoder(opt.num_layers, False)
         depth_decoder = networks.DepthDecoder(encoder.num_ch_enc, scales=range(4))
@@ -198,7 +232,25 @@ def evaluate(opt):
         quit()"""
 
     gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
-    gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1')["data"]
+
+    # allow_pickle=True is needed because 'data' is an object array (list of depth maps)
+    data_npz = np.load(gt_path, fix_imports=True, encoding='latin1', allow_pickle=True)
+    gt_depths = data_npz["data"]
+
+    print("-> Loaded gt_depths")
+    print("   type:", type(gt_depths), "dtype:", getattr(gt_depths, "dtype", None))
+
+    # For Hamlyn, 'gt_depths' is an object array of variable-size arrays.
+    # We DO NOT stack them; we keep them as a list-like structure.
+    if isinstance(gt_depths, np.ndarray) and gt_depths.dtype == object:
+        gt_depths = list(gt_depths)
+
+    # Optional sanity check
+    num_pred = pred_disps.shape[0]
+    num_gt = len(gt_depths)
+    print(f"-> num_pred: {num_pred}, num_gt: {num_gt}")
+    assert num_pred == num_gt, f"Mismatch: {num_pred} predictions vs {num_gt} gt depth maps"
+
 
     print("-> Evaluating")
 
