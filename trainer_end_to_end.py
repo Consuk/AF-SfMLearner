@@ -146,9 +146,7 @@ class Trainer:
 
         # Datasets
         datasets_dict = {
-            "kitti": datasets.KITTIRAWDataset,
-            "kitti_odom": datasets.KITTIOdomDataset,
-            "kitti_depth": datasets.KITTIDepthDataset,
+            "endovis": datasets.SCAREDRAWDataset,
             "hamlyn": datasets.HamlynDataset,
         }
 
