@@ -663,18 +663,27 @@ class Trainer:
             writer.add_scalar(l, v, self.step)
 
         if self.wandb_enabled:
-            wandb_losses = {f"{mode}/{k}": float(v.detach().cpu().item()) for k,
- v in losses.items()}
+            wandb_losses = {f"{mode}/{k}": float(v.detach().cpu().item()) for k, v in losses.items()}
             wandb.log(wandb_losses, step=self.step)
 
         if mode == "train":
             for scale in self.opt.scales:
-                disp = outputs[("disp", scale)]
+                disp = outputs[("disp", scale)]  # shape: [B, 1, H, W]
                 writer.add_image(f"disp_{scale}", disp[0], self.step)
+
                 if self.wandb_enabled and scale == 0:
-                    disp_np = disp[0].detach().cpu().numpy()
-                    disp_vis = cm.plasma((disp_np - disp_np.min()) / (disp_np.max() - disp_np.min() + 1e-8))[:, :, :3]
-                    wandb.log({f"{mode}/disp_scale0": wandb.Image(disp_vis)}, step=self.step)
+                    # Convert to [H, W] for correct colormap application
+                    disp_np = disp[0].detach().cpu().numpy()       # [1, H, W]
+                    disp_np = np.squeeze(disp_np, axis=0)          # [H, W]
+                    disp_norm = (disp_np - disp_np.min()) / (disp_np.max() - disp_np.min() + 1e-8)
+                    disp_vis = cm.plasma(disp_norm)[:, :, :3]      # RGB colormap image
+
+                    wandb.log({
+                        f"{mode}/disp_scale0": wandb.Image(disp_vis),
+                        f"{mode}/disp_min": disp_np.min(),
+                        f"{mode}/disp_max": disp_np.max(),
+                    }, step=self.step)
+
 
     def save_opts(self):
         """Save options to disk so we know what we ran this experiment with"""
