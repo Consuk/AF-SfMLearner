@@ -12,7 +12,6 @@ import torch.nn.functional as F
 from torch.cuda.amp import autocast
 import matplotlib.cm as cm
 
-
 from utils import *
 from layers import *
 from torch.utils.data import DataLoader
@@ -68,26 +67,30 @@ class Trainer:
 
         self.num_input_frames = len(self.opt.frame_ids)
 
-        self.models["encoder"] = networks.ResnetEncoder(self.opt.num_layers, self.opt.weights_init == "pretrained")
+        self.models["encoder"] = networks.ResnetEncoder(self.opt.num_layers, 
+                                                      self.opt.weights_init == "pretrained")
         self.models["encoder"].to(self.device)
         self.parameters_to_train += list(self.models["encoder"].parameters())
 
-        self.models["depth"] = networks.DepthDecoder(self.models["encoder"].num_ch_enc, self.opt.scales)
+        self.models["depth"] = networks.DepthDecoder(self.models["encoder"].num_ch_enc, 
+                                                    self.opt.scales)
         self.models["depth"].to(self.device)
         self.parameters_to_train += list(self.models["depth"].parameters())
 
-        self.models["transform_encoder"] = networks.ResnetEncoder(self.opt.num_layers, self.opt.weights_init == "pretrained",
-                                                                 num_input_images=self.num_pose_frames)
+        self.models["transform_encoder"] = networks.ResnetEncoder(self.opt.num_layers, 
+                                                                  self.opt.weights_init == "pretrained",
+                                                                  num_input_images=self.num_pose_frames)
         self.models["transform_encoder"].to(self.device)
         self.parameters_to_train += list(self.models["transform_encoder"].parameters())
 
         self.models["transform"] = networks.PoseDecoder(self.models["transform_encoder"].num_ch_enc,
-                                                       num_input_features=1,
-                                                       num_frames_to_predict_for=2)
+                                                        num_input_features=1,
+                                                        num_frames_to_predict_for=2)
         self.models["transform"].to(self.device)
         self.parameters_to_train += list(self.models["transform"].parameters())
 
-        self.models["position_encoder"] = networks.ResnetEncoder(self.opt.num_layers, self.opt.weights_init == "pretrained",
+        self.models["position_encoder"] = networks.ResnetEncoder(self.opt.num_layers, 
+                                                                 self.opt.weights_init == "pretrained",
                                                                  num_input_images=self.num_pose_frames)
         self.models["position_encoder"].to(self.device)
         self.parameters_to_train += list(self.models["position_encoder"].parameters())
@@ -132,7 +135,8 @@ class Trainer:
         self.models["pose"].to(self.device)
         self.parameters_to_train += list(self.models["pose"].parameters())
 
-        self.model_optimizer = optim.Adam(self.parameters_to_train, self.opt.learning_rate)
+        self.model_optimizer = optim.Adam(self.parameters_to_train, 
+                                         self.opt.learning_rate)
         self.model_lr_scheduler = optim.lr_scheduler.StepLR(
             self.model_optimizer, self.opt.scheduler_step_size, 0.1)
 
@@ -159,10 +163,10 @@ class Trainer:
             if len(val_filenames) == 0:
                 raise FileNotFoundError("val_files.txt is empty")
         except Exception:
-            test_fpath = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "test_files.txt")
-            if os.path.exists(test_fpath):
+            test_path = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "test_files.txt")
+            if os.path.exists(test_path):
                 print(f"[WARN] No valid val_files.txt found for split '{self.opt.split}'. Using test_files.txt as validation.")
-                val_filenames = readlines(test_fpath)
+                val_filenames = readlines(test_path)
             else:
                 print(f"[WARN] No valid val_files.txt or test_files.txt found for split '{self.opt.split}'. Using train as validation (NOT recommended).")
                 val_filenames = train_filenames
@@ -238,7 +242,8 @@ class Trainer:
             self.position_depth[scale].to(self.device)
 
         self.depth_metric_names = [
-            "de/abs_rel", "de/sq_rel", "de/rms", "de/log_rms", "da/a1", "da/a2", "da/a3"]
+            "de/abs_rel", "de/sq_rel", "de/rms", "de/log_rms", "da/a1", "da/a2",
+ "da/a3"]
 
         print("Using split:\n  ", self.opt.split)
         print("There are {:d} training items and {:d} validation items\n".format(
@@ -319,7 +324,6 @@ class Trainer:
                     # We need a weights folder to evaluate against.
                     self.save_model()
                 weights_folder = os.path.join(self.log_path, "models", f"weights_{self.epoch}")
-                self.evaluate_each_epoch_if_enabled(weights_folder)
 
     def evaluate_each_epoch_if_enabled(self, weights_folder):
         """Runs depth evaluation using gt_depths.npz (e.g., Hamlyn) and logs metrics."""
@@ -396,8 +400,7 @@ class Trainer:
                 pass
 
     def run_epoch(self):
-        """Run a single epoch of training and validation
-        """
+        """Run a single epoch of training and validation"""
         self.model_lr_scheduler.step()
 
         print("Training")
@@ -426,7 +429,6 @@ class Trainer:
             
         if self.wandb_enabled:
             wandb.log({"epoch": self.epoch}, step=self.step)
-
 
     def _deep_feat(self, feats):
         """Return the deepest feature map tensor from a ResNet encoder output."""
@@ -472,16 +474,12 @@ class Trainer:
                 # shared encoder: run the main encoder on each image
                 feats0 = self.models["encoder"](pose_pair[0])
                 feats1 = self.models["encoder"](pose_pair[1])
-                deep0 = self._deep_feat(feats0)
-                deep1 = self._deep_feat(feats1)
-                axisangle, translation = self.models["pose"]([deep0, deep1])
+                axisangle, translation = self.models["pose"]([feats0, feats1])
             else:
                 # separate_resnet: run pose_encoder on concatenated pair
                 pair = torch.cat(pose_pair, 1)
                 pose_feats = self.models["pose_encoder"](pair)
-                deep = self._deep_feat(pose_feats)
-                # IMPORTANT: PoseDecoder expects a list of feature tensors (one per input feature)
-                axisangle, translation = self.models["pose"]([deep])
+                axisangle, translation = self.models["pose"]([pose_feats])
 
             outputs[("axisangle", 0, f_i)] = axisangle
             outputs[("translation", 0, f_i)] = translation
@@ -513,7 +511,6 @@ class Trainer:
                     padding_mode="border",
                     align_corners=True
                 )
-
 
     def process_batch(self, inputs):
         """Pass a minibatch through the network and generate images and losses."""
@@ -559,8 +556,7 @@ class Trainer:
         return outputs, losses
 
     def val(self):
-        """Validate the model on a single minibatch
-        """
+        """Validate the model on a single minibatch"""
         self.set_eval()
         try:
             inputs = next(self.val_iter)
@@ -577,8 +573,7 @@ class Trainer:
         self.set_train()
 
     def compute_losses(self, inputs, outputs):
-        """Compute the reprojection and smoothness losses for a minibatch
-        """
+        """Compute the reprojection and smoothness losses for a minibatch"""
         losses = {}
         total_loss = 0
 
@@ -615,7 +610,8 @@ class Trainer:
                 combined = torch.cat((identity_reprojection_loss, reprojection_loss), 1)
                 reprojection_loss, idxs = torch.min(combined, dim=1)
                 if self.opt.predictive_mask:
-                    outputs["predictive_mask"] = torch.gather(outputs["predictive_mask"], 1, idxs.unsqueeze(1).unsqueeze(2).unsqueeze(3))
+                    outputs["predictive_mask"] = torch.gather(outputs["predictive_mask"], 1,
+                                                              idxs.unsqueeze(1).unsqueeze(2).unsqueeze(3))
                     outputs["predictive_mask"] *= float(len(self.opt.frame_ids) - 1)
 
             if self.opt.predictive_mask:
@@ -638,8 +634,7 @@ class Trainer:
         return losses
 
     def compute_reprojection_loss(self, pred, target):
-        """Computes reprojection loss between a batch of predicted and target images
-        """
+        """Computes reprojection loss between a batch of predicted and target images"""
         abs_diff = torch.abs(target - pred)
         l1_loss = abs_diff.mean(1, True)
 
@@ -650,8 +645,7 @@ class Trainer:
             return 0.85 * ssim_loss + 0.15 * l1_loss
 
     def log_time(self, batch_idx, duration, loss):
-        """Print a logging statement to the terminal
-        """
+        """Print a logging statement to the terminal"""
         samples_per_sec = self.opt.batch_size / duration
         time_sofar = time.time() - self.start_time
         training_time_left = (self.num_total_steps / self.step - 1.0) * time_sofar if self.step > 0 else 0
@@ -663,14 +657,14 @@ class Trainer:
             sec_to_hm_str(time_sofar), sec_to_hm_str(training_time_left)))
 
     def log(self, mode, inputs, outputs, losses):
-        """Write an event to the tensorboard events file
-        """
+        """Write an event to the tensorboard events file"""
         writer = self.writers[mode]
         for l, v in losses.items():
             writer.add_scalar(l, v, self.step)
 
         if self.wandb_enabled:
-            wandb_losses = {f"{mode}/{k}": float(v.detach().cpu().item()) for k, v in losses.items()}
+            wandb_losses = {f"{mode}/{k}": float(v.detach().cpu().item()) for k,
+ v in losses.items()}
             wandb.log(wandb_losses, step=self.step)
 
         if mode == "train":
@@ -683,8 +677,7 @@ class Trainer:
                     wandb.log({f"{mode}/disp_scale0": wandb.Image(disp_vis)}, step=self.step)
 
     def save_opts(self):
-        """Save options to disk so we know what we ran this experiment with
-        """
+        """Save options to disk so we know what we ran this experiment with"""
         models_dir = os.path.join(self.log_path, "models")
         os.makedirs(models_dir, exist_ok=True)
         to_save = self.opt.__dict__.copy()
@@ -693,9 +686,8 @@ class Trainer:
             json.dump(to_save, f, indent=2)
 
     def save_model(self):
-        """Save model weights to disk
-        """
-        save_folder = os.path.join(self.log_path, "models", "weights_{}".format(self.epoch))
+        """Save model weights to disk"""
+        save_folder = os.path.join(self.log_path, "models", f"weights_{self.epoch}")
         os.makedirs(save_folder, exist_ok=True)
 
         for model_name, model in self.models.items():
@@ -706,12 +698,11 @@ class Trainer:
                 to_save["width"] = self.opt.width
             torch.save(to_save, save_path)
 
-        save_path = os.path.join(save_folder, "{}.pth".format("adam"))
+        save_path = os.path.join(save_folder, "adam.pth")
         torch.save(self.model_optimizer.state_dict(), save_path)
 
     def load_model(self):
-        """Load model(s) from disk
-        """
+        """Load model(s) from disk"""
         self.opt.load_weights_folder = os.path.expanduser(self.opt.load_weights_folder)
 
         assert os.path.isdir(self.opt.load_weights_folder), \
@@ -736,8 +727,7 @@ class Trainer:
             print("Cannot find Adam weights so Adam is randomly initialized")
 
     def print_params(self):
-        """Print parameters for each model
-        """
+        """Print parameters for each model"""
         print("Training model named:\n  ", self.opt.model_name)
         print("Models and parameters:")
         for k, v in self.models.items():
