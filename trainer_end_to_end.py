@@ -428,135 +428,135 @@ class Trainer:
             wandb.log({"epoch": self.epoch}, step=self.step)
 
 
-def _deep_feat(self, feats):
-    """Return the deepest feature map tensor from a ResNet encoder output."""
-    if isinstance(feats, (list, tuple)):
-        return feats[-1]
-    return feats
+    def _deep_feat(self, feats):
+        """Return the deepest feature map tensor from a ResNet encoder output."""
+        if isinstance(feats, (list, tuple)):
+            return feats[-1]
+        return feats
 
-def predict_poses(self, inputs):
-    """Predict poses between target (0) and each source frame in frame_ids (Monodepth2-style)."""
-    outputs = {}
+    def predict_poses(self, inputs):
+        """Predict poses between target (0) and each source frame in frame_ids (Monodepth2-style)."""
+        outputs = {}
 
-    for f_i in self.opt.frame_ids[1:]:
-        if f_i == "s":
-            continue
+        for f_i in self.opt.frame_ids[1:]:
+            if f_i == "s":
+                continue
 
-        # PoseCNN path
-        if self.opt.pose_model_type == "posecnn":
-            if self.opt.pose_model_input == "all":
-                pose_in = torch.cat([inputs[("color_aug", i, 0)] for i in self.opt.frame_ids], 1)
-            else:
-                if f_i < 0:
-                    pose_in = torch.cat([inputs[("color_aug", f_i, 0)], inputs[("color_aug", 0, 0)]], 1)
+            # PoseCNN path
+            if self.opt.pose_model_type == "posecnn":
+                if self.opt.pose_model_input == "all":
+                    pose_in = torch.cat([inputs[("color_aug", i, 0)] for i in self.opt.frame_ids], 1)
                 else:
-                    pose_in = torch.cat([inputs[("color_aug", 0, 0)], inputs[("color_aug", f_i, 0)]], 1)
+                    if f_i < 0:
+                        pose_in = torch.cat([inputs[("color_aug", f_i, 0)], inputs[("color_aug", 0, 0)]], 1)
+                    else:
+                        pose_in = torch.cat([inputs[("color_aug", 0, 0)], inputs[("color_aug", f_i, 0)]], 1)
 
-            axisangle, translation = self.models["pose"](pose_in)
+                axisangle, translation = self.models["pose"](pose_in)
+                outputs[("axisangle", 0, f_i)] = axisangle
+                outputs[("translation", 0, f_i)] = translation
+                outputs[("cam_T_cam", 0, f_i)] = transformation_from_parameters(
+                    axisangle[:, 0], translation[:, 0], invert=bool(f_i < 0)
+                )
+                continue
+
+            # separate_resnet / shared
+            if f_i < 0:
+                pose_pair = [inputs[("color_aug", f_i, 0)], inputs[("color_aug", 0, 0)]]
+                invert_pose = True
+            else:
+                pose_pair = [inputs[("color_aug", 0, 0)], inputs[("color_aug", f_i, 0)]]
+                invert_pose = False
+
+            if self.opt.pose_model_type == "shared":
+                # shared encoder: run the main encoder on each image
+                feats0 = self.models["encoder"](pose_pair[0])
+                feats1 = self.models["encoder"](pose_pair[1])
+                deep0 = self._deep_feat(feats0)
+                deep1 = self._deep_feat(feats1)
+                axisangle, translation = self.models["pose"]([deep0, deep1])
+            else:
+                # separate_resnet: run pose_encoder on concatenated pair
+                pair = torch.cat(pose_pair, 1)
+                pose_feats = self.models["pose_encoder"](pair)
+                deep = self._deep_feat(pose_feats)
+                # IMPORTANT: PoseDecoder expects a list of feature tensors (one per input feature)
+                axisangle, translation = self.models["pose"]([deep])
+
             outputs[("axisangle", 0, f_i)] = axisangle
             outputs[("translation", 0, f_i)] = translation
             outputs[("cam_T_cam", 0, f_i)] = transformation_from_parameters(
-                axisangle[:, 0], translation[:, 0], invert=bool(f_i < 0)
-            )
-            continue
-
-        # separate_resnet / shared
-        if f_i < 0:
-            pose_pair = [inputs[("color_aug", f_i, 0)], inputs[("color_aug", 0, 0)]]
-            invert_pose = True
-        else:
-            pose_pair = [inputs[("color_aug", 0, 0)], inputs[("color_aug", f_i, 0)]]
-            invert_pose = False
-
-        if self.opt.pose_model_type == "shared":
-            # shared encoder: run the main encoder on each image
-            feats0 = self.models["encoder"](pose_pair[0])
-            feats1 = self.models["encoder"](pose_pair[1])
-            deep0 = self._deep_feat(feats0)
-            deep1 = self._deep_feat(feats1)
-            axisangle, translation = self.models["pose"]([deep0, deep1])
-        else:
-            # separate_resnet: run pose_encoder on concatenated pair
-            pair = torch.cat(pose_pair, 1)
-            pose_feats = self.models["pose_encoder"](pair)
-            deep = self._deep_feat(pose_feats)
-            # IMPORTANT: PoseDecoder expects a list of feature tensors (one per input feature)
-            axisangle, translation = self.models["pose"]([deep])
-
-        outputs[("axisangle", 0, f_i)] = axisangle
-        outputs[("translation", 0, f_i)] = translation
-        outputs[("cam_T_cam", 0, f_i)] = transformation_from_parameters(
-            axisangle[:, 0], translation[:, 0], invert=invert_pose
-        )
-
-    return outputs
-
-def generate_images_pred(self, inputs, outputs):
-    """Generate warped images for photometric reprojection loss."""
-    for scale in self.opt.scales:
-        disp = outputs[("disp", scale)]
-        _, depth = disp_to_depth(disp, self.opt.min_depth, self.opt.max_depth)
-        outputs[("depth", 0, scale)] = depth
-
-        for frame_id in self.opt.frame_ids[1:]:
-            if frame_id == "s":
-                continue
-
-            T = outputs[("cam_T_cam", 0, frame_id)]
-            cam_points = self.backproject_depth[scale](depth, inputs[("inv_K", scale)])
-            pix_coords = self.project_3d[scale](cam_points, inputs[("K", scale)], T)
-
-            outputs[("sample", frame_id, scale)] = pix_coords
-            outputs[("color", frame_id, scale)] = F.grid_sample(
-                inputs[("color", frame_id, scale)],
-                pix_coords,
-                padding_mode="border",
-                align_corners=True
+                axisangle[:, 0], translation[:, 0], invert=invert_pose
             )
 
+        return outputs
 
-def process_batch(self, inputs):
-    """Pass a minibatch through the network and generate images and losses."""
-    for key, ipt in inputs.items():
-        inputs[key] = ipt.to(self.device)
+    def generate_images_pred(self, inputs, outputs):
+        """Generate warped images for photometric reprojection loss."""
+        for scale in self.opt.scales:
+            disp = outputs[("disp", scale)]
+            _, depth = disp_to_depth(disp, self.opt.min_depth, self.opt.max_depth)
+            outputs[("depth", 0, scale)] = depth
 
-    outputs = {}
+            for frame_id in self.opt.frame_ids[1:]:
+                if frame_id == "s":
+                    continue
 
-    # depth prediction (target frame 0)
-    features = self.models["encoder"](inputs[("color_aug", 0, 0)])
-    outputs.update(self.models["depth"](features))
+                T = outputs[("cam_T_cam", 0, frame_id)]
+                cam_points = self.backproject_depth[scale](depth, inputs[("inv_K", scale)])
+                pix_coords = self.project_3d[scale](cam_points, inputs[("K", scale)], T)
 
-    if self.opt.predictive_mask:
-        outputs["predictive_mask"] = self.models["predictive_mask"](features)
+                outputs[("sample", frame_id, scale)] = pix_coords
+                outputs[("color", frame_id, scale)] = F.grid_sample(
+                    inputs[("color", frame_id, scale)],
+                    pix_coords,
+                    padding_mode="border",
+                    align_corners=True
+                )
 
-    # pose prediction (per-frame, Monodepth2-style)
-    outputs.update(self.predict_poses(inputs))
 
-    # warp images for photometric reprojection loss
-    self.generate_images_pred(inputs, outputs)
+    def process_batch(self, inputs):
+        """Pass a minibatch through the network and generate images and losses."""
+        for key, ipt in inputs.items():
+            inputs[key] = ipt.to(self.device)
 
-    # Keep ASFMLearner extra heads (transform/position) computed (optional),
-    # but make them safe by feeding PoseDecoder only the deepest feature map.
-    try:
-        transform_pair = torch.cat([inputs[("color_aug", i, 0)] for i in self.opt.frame_ids if i != 0], 1)
-        transform_feats = self.models["transform_encoder"](transform_pair)
-        deep_tr = self._deep_feat(transform_feats)
-        axisangle_tr, translation_tr = self.models["transform"]([deep_tr])
-        outputs.update({"axisangle_tr": axisangle_tr, "translation_tr": translation_tr})
-    except Exception:
-        pass
+        outputs = {}
 
-    try:
-        position_pair = torch.cat([inputs[("color_aug", i, 0)] for i in self.opt.frame_ids if i != 0], 1)
-        position_feats = self.models["position_encoder"](position_pair)
-        deep_pos = self._deep_feat(position_feats)
-        axisangle_pos, translation_pos = self.models["position"]([deep_pos])
-        outputs.update({"axisangle_pos": axisangle_pos, "translation_pos": translation_pos})
-    except Exception:
-        pass
+        # depth prediction (target frame 0)
+        features = self.models["encoder"](inputs[("color_aug", 0, 0)])
+        outputs.update(self.models["depth"](features))
 
-    losses = self.compute_losses(inputs, outputs)
-    return outputs, losses
+        if self.opt.predictive_mask:
+            outputs["predictive_mask"] = self.models["predictive_mask"](features)
+
+        # pose prediction (per-frame, Monodepth2-style)
+        outputs.update(self.predict_poses(inputs))
+
+        # warp images for photometric reprojection loss
+        self.generate_images_pred(inputs, outputs)
+
+        # Keep ASFMLearner extra heads (transform/position) computed (optional),
+        # but make them safe by feeding PoseDecoder only the deepest feature map.
+        try:
+            transform_pair = torch.cat([inputs[("color_aug", i, 0)] for i in self.opt.frame_ids if i != 0], 1)
+            transform_feats = self.models["transform_encoder"](transform_pair)
+            deep_tr = self._deep_feat(transform_feats)
+            axisangle_tr, translation_tr = self.models["transform"]([deep_tr])
+            outputs.update({"axisangle_tr": axisangle_tr, "translation_tr": translation_tr})
+        except Exception:
+            pass
+
+        try:
+            position_pair = torch.cat([inputs[("color_aug", i, 0)] for i in self.opt.frame_ids if i != 0], 1)
+            position_feats = self.models["position_encoder"](position_pair)
+            deep_pos = self._deep_feat(position_feats)
+            axisangle_pos, translation_pos = self.models["position"]([deep_pos])
+            outputs.update({"axisangle_pos": axisangle_pos, "translation_pos": translation_pos})
+        except Exception:
+            pass
+
+        losses = self.compute_losses(inputs, outputs)
+        return outputs, losses
 
     def val(self):
         """Validate the model on a single minibatch
@@ -657,7 +657,7 @@ def process_batch(self, inputs):
         training_time_left = (self.num_total_steps / self.step - 1.0) * time_sofar if self.step > 0 else 0
 
         print_string = "epoch {:>3} | batch {:>6} | examples/s: {:5.1f}" + \
-                       " | loss: {:.5f} | time elapsed: {} | time left: {}"
+                    " | loss: {:.5f} | time elapsed: {} | time left: {}"
         print(print_string.format(
             self.epoch, batch_idx, samples_per_sec, loss,
             sec_to_hm_str(time_sofar), sec_to_hm_str(training_time_left)))
