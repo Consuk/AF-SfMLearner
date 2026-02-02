@@ -3,8 +3,6 @@ from __future__ import absolute_import, division, print_function
 import os
 import argparse
 
-file_dir = os.path.dirname(__file__)  # the directory that options.py resides in
-
 
 class MonodepthOptions:
     def __init__(self):
@@ -14,7 +12,7 @@ class MonodepthOptions:
         self.parser.add_argument("--data_path",
                                  type=str,
                                  help="path to the training data",
-                                 default=os.path.join(file_dir, "endovis_data"))
+                                 required=True)
         self.parser.add_argument("--log_dir",
                                  type=str,
                                  help="log directory",
@@ -28,8 +26,8 @@ class MonodepthOptions:
         self.parser.add_argument("--split",
                                  type=str,
                                  help="which training split to use",
-                                 choices=["endovis", "eigen_zhou", "eigen_full", "odom", "benchmark", "hamlyn"],
-                                 default="endovis")
+                                 choices=["eigen_zhou", "eigen_full", "odom", "benchmark", "endovis", "hamlyn"],
+                                 default="eigen_zhou")
         self.parser.add_argument("--num_layers",
                                  type=int,
                                  help="number of resnet layers",
@@ -39,7 +37,7 @@ class MonodepthOptions:
                                  type=str,
                                  help="dataset to train on",
                                  default="endovis",
-                                 choices=["endovis", "kitti", "kitti_odom", "kitti_depth", "kitti_test", "hamlyn"])
+                                 choices=["kitti", "kitti_odom", "kitti_depth", "kitti_test", "endovis", "hamlyn"])
         self.parser.add_argument("--png",
                                  help="if set, trains from raw KITTI png files (instead of jpgs)",
                                  action="store_true")
@@ -54,31 +52,7 @@ class MonodepthOptions:
         self.parser.add_argument("--disparity_smoothness",
                                  type=float,
                                  help="disparity smoothness weight",
-                                 default=1e-4)
-        self.parser.add_argument("--position_smoothness",
-                                 type=float,
-                                 help="registration smoothness weight",
                                  default=1e-3)
-        self.parser.add_argument("--consistency_constraint",
-                                 type=float,
-                                 help="consistency constraint weight",
-                                 default=0.01)
-        self.parser.add_argument("--epipolar_constraint",
-                                 type=float,
-                                 help="epipolar constraint weight",
-                                 default=0.01)
-        self.parser.add_argument("--geometry_constraint",
-                                 type=float,
-                                 help="geometry constraint weight",
-                                 default=0.01)
-        self.parser.add_argument("--transform_constraint",
-                                 type=float,
-                                 help="transform constraint weight",
-                                 default=0.01)
-        self.parser.add_argument("--transform_smoothness",
-                                 type=float,
-                                 help="transform smoothness weight",
-                                 default=0.01)
         self.parser.add_argument("--scales",
                                  nargs="+",
                                  type=int,
@@ -87,7 +61,7 @@ class MonodepthOptions:
         self.parser.add_argument("--min_depth",
                                  type=float,
                                  help="minimum depth",
-                                 default=0.1)
+                                 default=1e-3)
         self.parser.add_argument("--max_depth",
                                  type=float,
                                  help="maximum depth",
@@ -100,8 +74,6 @@ class MonodepthOptions:
                                  type=int,
                                  help="frames to load",
                                  default=[0, -1, 1])
-
-        # OPTIMIZATION options
         self.parser.add_argument("--batch_size",
                                  type=int,
                                  help="batch size",
@@ -117,9 +89,7 @@ class MonodepthOptions:
         self.parser.add_argument("--scheduler_step_size",
                                  type=int,
                                  help="step size of the scheduler",
-                                 default=10)
-
-        # ABLATION options
+                                 default=15)
         self.parser.add_argument("--v1_multiscale",
                                  help="if set, uses monodepth v1 multiscale",
                                  action="store_true")
@@ -127,19 +97,18 @@ class MonodepthOptions:
                                  help="if set, uses average reprojection loss",
                                  action="store_true")
         self.parser.add_argument("--disable_automasking",
-                                 help="if set, doesn't do auto-masking",
+                                 help="if set, disables auto-masking",
                                  action="store_true")
         self.parser.add_argument("--predictive_mask",
-                                 help="if set, uses a predictive masking scheme as in Zhou et al",
+                                 help="if set, uses a predictive mask",
                                  action="store_true")
         self.parser.add_argument("--no_ssim",
                                  help="if set, disables ssim in the loss",
                                  action="store_true")
         self.parser.add_argument("--weights_init",
                                  type=str,
-                                 help="pretrained or scratch",
-                                 default="pretrained",
-                                 choices=["pretrained", "scratch"])
+                                 help="pretrained weights for resnet",
+                                 default="pretrained")
         self.parser.add_argument("--pose_model_input",
                                  type=str,
                                  help="how many images the pose network gets",
@@ -147,18 +116,21 @@ class MonodepthOptions:
                                  choices=["pairs", "all"])
         self.parser.add_argument("--pose_model_type",
                                  type=str,
-                                 help="normal or shared",
+                                 help="which pose network architecture to use",
                                  default="separate_resnet",
                                  choices=["posecnn", "separate_resnet", "shared"])
+        self.parser.add_argument("--num_workers",
+                                 type=int,
+                                 help="number of dataloader workers",
+                                 default=12)
 
         # SYSTEM options
         self.parser.add_argument("--no_cuda",
                                  help="if set disables CUDA",
                                  action="store_true")
-        self.parser.add_argument("--num_workers",
-                                 type=int,
-                                 help="number of dataloader workers",
-                                 default=12)
+        self.parser.add_argument("--multi_gpu",
+                                 help="if set uses multiple GPUs",
+                                 action="store_true")
 
         # LOADING options
         self.parser.add_argument("--load_weights_folder",
@@ -168,17 +140,38 @@ class MonodepthOptions:
                                  nargs="+",
                                  type=str,
                                  help="models to load",
-                                 default=["position_encoder", "position"])
+                                 default=["encoder", "depth", "pose_encoder", "pose"])
 
         # LOGGING options
         self.parser.add_argument("--log_frequency",
                                  type=int,
                                  help="number of batches between each tensorboard log",
-                                 default=200)
+                                 default=250)
         self.parser.add_argument("--save_frequency",
                                  type=int,
                                  help="number of epochs between each save",
                                  default=1)
+
+        # WANDB options
+        self.parser.add_argument("--use_wandb",
+                                 help="if set, logs training and evaluation to Weights & Biases",
+                                 action="store_true")
+        self.parser.add_argument("--wandb_project",
+                                 type=str,
+                                 default="af-sfmlearner",
+                                 help="wandb project name")
+        self.parser.add_argument("--wandb_run_name",
+                                 type=str,
+                                 default=None,
+                                 help="wandb run name (defaults to model_name)")
+        self.parser.add_argument("--wandb_entity",
+                                 type=str,
+                                 default=None,
+                                 help="wandb entity/team (optional)")
+        self.parser.add_argument("--wandb_eval_max_images",
+                                 type=int,
+                                 default=3,
+                                 help="max number of evaluation images (disparity colormap) to log per epoch")
 
         # EVALUATION options
         self.parser.add_argument("--eval_stereo",
@@ -199,9 +192,9 @@ class MonodepthOptions:
                                  help="optional path to a .npy disparities file to evaluate")
         self.parser.add_argument("--eval_split",
                                  type=str,
-                                 default="endovis",
-                                 choices=[
-                                    "eigen", "eigen_benchmark", "benchmark", "odom_9", "odom_10", "endovis","hamlyn","SERV-CT"],
+                                 default="SERV-CT",
+                                 choices=["eigen", "eigen_benchmark", "benchmark", "odom_9", "odom_10",
+                                          "endovis", "hamlyn", "SERV-CT"],
                                  help="which split to run eval on")
         self.parser.add_argument("--save_pred_disps",
                                  help="if set saves predicted disparities",
@@ -220,15 +213,28 @@ class MonodepthOptions:
                                  help="if set will perform the flipping post processing "
                                       "from the original monodepth paper",
                                  action="store_true")
-        self.parser.add_argument("--use_wandb", action="store_true",
-                              help="Enable Weights & Biases logging")
-        self.parser.add_argument("--wandb_project", type=str, default="af-sfmlearner",
-                              help="W&B project name")
-        self.parser.add_argument("--wandb_entity", type=str, default=None,
-                              help="W&B entity/org (optional)")
-        self.parser.add_argument("--wandb_run_name", type=str, default=None,
-                              help="W&B run name (optional)")
 
+        # EXTRA: TRAIN-TIME EVALUATION
+        self.parser.add_argument("--eval_each_epoch",
+                                 help="if set, runs evaluation at the end of every epoch (if gt_depths.npz exists)",
+                                 action="store_true")
+        self.parser.add_argument("--eval_batch_size",
+                                 type=int,
+                                 default=16,
+                                 help="batch size used for evaluation")
+        self.parser.add_argument("--eval_weights_subfolder",
+                                 type=str,
+                                 default="models/weights",
+                                 help="relative subfolder under log_dir/model_name where weights are saved")
+
+        # EXTRA: HAMLYN STRICT NEIGHBORS
+        self.parser.add_argument("--hamlyn_strict_neighbors",
+                                 help="if set, for Hamlyn we snap missing neighbor frames to nearest existing instead of using blank images",
+                                 action="store_true")
+        self.parser.add_argument("--neighbor_search_max",
+                                 type=int,
+                                 default=10,
+                                 help="max +/- index search for nearest neighbor frame when strict neighbor mode is enabled")
 
     def parse(self):
         self.options = self.parser.parse_args()
