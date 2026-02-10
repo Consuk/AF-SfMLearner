@@ -26,5 +26,5 @@ if "corruption" in df.columns:
     print(avg_per_corr)
 
     # Guarda tabla resumen
-    avg_per_corr.to_csv("corruption_averages.csv", index=False)
+    avg_per_corr.to_csv("corruption_averages_hamlyn.csv", index=False)
     print("\nPromedios por corrupción guardados en 'corruption_averages.csv'")
