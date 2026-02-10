@@ -9,7 +9,6 @@ import cv2
 from collections import defaultdict
 
 import torch
-from torch.utils.data import DataLoader
 
 # Reutilizamos utilidades y redes del repo
 from options import MonodepthOptions  # solo para consistencia (no usado)
@@ -27,8 +26,6 @@ except Exception as e:
 
 # ===== Constantes/metas =====
 STEREO_SCALE_FACTOR = 5.4
-MIN_DEPTH = 1e-3
-MAX_DEPTH = 150.0
 
 
 def compute_errors(gt, pred):
@@ -90,15 +87,13 @@ def _parse_endovis_split_line(line: str):
 
 def _parse_hamlyn_split_line(line: str):
     """
-    Hamlyn (tu test_files2) suele ser:
+    Hamlyn (test_files2) típicamente:
         rectified05 0000000001 r
-    o (a veces) con rel_path ya incluyendo image01/image02:
+    o con rel_path incluyendo image01/image02:
         rectified05/rectified05/image01 0000000001
         rectified05/rectified05/image02 0000000001
 
     Devuelve: rel_path:str, img_idx:str, side_or_cam:str|None
-      - si hay 3 tokens: side_or_cam = 'l' o 'r'
-      - si hay 2 tokens: side_or_cam = None (pero rel_path puede traer image01/image02)
     """
     parts = line.strip().split()
     if len(parts) < 2:
@@ -120,12 +115,6 @@ def _normalize_img_idx(img_idx: str) -> str:
 # ============================================================
 #                 PATH BUILDERS
 # ============================================================
-def _build_endovis_img_path(root, ds, keyf, frame_idx, png=False):
-    """<root>/<dataset>/<keyframe>/data/<frame>.<ext>"""
-    ext = ".png" if png else ".jpg"
-    return os.path.join(root, ds, keyf, "data", f"{frame_idx}{ext}")
-
-
 def _find_hamlyn_img_path(sev_root: str, rel_path: str, img_idx: str, side: str, png: bool):
     """
     Encuentra la ruta de la imagen CORROMPIDA en un severity_root.
@@ -133,11 +122,10 @@ def _find_hamlyn_img_path(sev_root: str, rel_path: str, img_idx: str, side: str,
     Soporta:
       - rel_path = 'rectified05' + side -> busca:
           sev_root/rectified05/image01/img.jpg
-          sev_root/rectified05/rectified05/image01/img.jpg   (TU CASO)
+          sev_root/rectified05/rectified05/image01/img.jpg   (tu caso)
       - rel_path ya incluye image01/image02 -> busca:
           sev_root/<rel_path>/img.jpg
-      - y variantes raras tipo rel_path='rectified05/image01'
-          sev_root/rectified05/rectified05/image01/img.jpg
+      - rel_path='rectified05/image01' -> busca doble rectified
     """
     ext = ".png" if png else ".jpg"
     img_idx = _normalize_img_idx(img_idx)
@@ -161,7 +149,6 @@ def _find_hamlyn_img_path(sev_root: str, rel_path: str, img_idx: str, side: str,
 
     # Caso: rel_path es solo la secuencia, se decide cam con side
     if side is None:
-        # no hay l/r y tampoco image01/image02 incluido -> no podemos resolver
         return None
 
     cam = "image01" if side.lower().startswith("l") else "image02"
@@ -193,6 +180,8 @@ def evaluate_one_root_endovis(
     pred_depth_scale_factor=1.0,
     strict=False,
     device="cuda",
+    min_depth=1e-3,
+    max_depth=150.0,
 ):
     """
     Evalúa EndoVIS/SCARED usando SCAREDRAWDataset y un bucle manual (lenient/strict).
@@ -273,7 +262,7 @@ def evaluate_one_root_endovis(
         pred_disp = cv2.resize(pred_disp, (gt_w, gt_h))
         pred_depth = 1.0 / (pred_disp + 1e-8)
 
-        mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
+        mask = np.logical_and(gt_depth > min_depth, gt_depth < max_depth)
         pd = pred_depth[mask]
         gd = gt_depth[mask]
 
@@ -285,8 +274,8 @@ def evaluate_one_root_endovis(
             ratios.append(ratio)
             pd *= ratio
 
-        pd[pd < MIN_DEPTH] = MIN_DEPTH
-        pd[pd > MAX_DEPTH] = MAX_DEPTH
+        pd[pd < min_depth] = min_depth
+        pd[pd > max_depth] = max_depth
 
         errors.append(compute_errors(gd, pd))
 
@@ -312,14 +301,12 @@ def evaluate_one_root_hamlyn(
     pred_depth_scale_factor=1.0,
     strict=False,
     device="cuda",
+    min_depth=1e-3,
+    max_depth=150.0,
 ):
     """
     Evalúa Hamlyn CORROMPIDO leyendo rutas desde test_files2.txt.
-    Espera que sev_root sea algo como:
-      <corruption_dir>/severity_1
-    y adentro se mantenga la estructura:
-      rectifiedXX/rectifiedXX/image01/*.jpg
-      rectifiedXX/rectifiedXX/image02/*.jpg
+    sev_root = <corruption_dir>/severity_1
     """
     n = len(filenames)
 
@@ -402,7 +389,7 @@ def evaluate_one_root_hamlyn(
         pred_disp = cv2.resize(pred_disp, (gt_w, gt_h))
         pred_depth = 1.0 / (pred_disp + 1e-8)
 
-        mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
+        mask = np.logical_and(gt_depth > min_depth, gt_depth < max_depth)
         pd = pred_depth[mask]
         gd = gt_depth[mask]
 
@@ -414,8 +401,8 @@ def evaluate_one_root_hamlyn(
             ratios.append(ratio)
             pd *= ratio
 
-        pd[pd < MIN_DEPTH] = MIN_DEPTH
-        pd[pd > MAX_DEPTH] = MAX_DEPTH
+        pd[pd < min_depth] = min_depth
+        pd[pd > max_depth] = max_depth
 
         errors.append(compute_errors(gd, pd))
 
@@ -432,8 +419,8 @@ def evaluate_one_root_hamlyn(
 # ============================================================
 def list_corruption_dirs(root):
     """
-    Devuelve los directorios de primer nivel que representan corrupciones.
-    Si 'root' ya es una carpeta de una corrupción (que contiene severity_*), la devuelve tal cual.
+    Devuelve directorios de primer nivel que representan corrupciones.
+    Si 'root' ya es una carpeta de una corrupción (contiene severity_*), devuelve [root].
     """
     if not os.path.isdir(root):
         return []
@@ -475,15 +462,13 @@ def _load_split_and_gt(dataset_type, splits_dir, split_name, split_file, gt_dept
 
     files = readlines(split_file)
 
-    # ✅ allow_pickle=True para object arrays (listas de mapas de profundidad)
+    # allow_pickle=True para object arrays
     npz = np.load(gt_depths_file, allow_pickle=True, fix_imports=True, encoding="latin1")
     if "data" in npz.files:
         gt_depths = npz["data"]
     else:
-        # fallback por si el npz tiene otra key
         gt_depths = npz[npz.files[0]]
 
-    # Alinear longitudes para evitar out-of-bounds
     n_files = len(files)
     n_gt = gt_depths.shape[0]
     if n_files != n_gt:
@@ -495,28 +480,25 @@ def _load_split_and_gt(dataset_type, splits_dir, split_name, split_file, gt_dept
     return files, gt_depths, split_file, gt_depths_file
 
 
-
 def main():
     parser = argparse.ArgumentParser("Evaluate corruptions (EndoVIS or Hamlyn) with AF-SfMLearner weights")
     parser.add_argument("--dataset_type", type=str, choices=["endovis", "hamlyn"], default="endovis",
                         help="Tipo de dataset a evaluar (default: endovis).")
 
     parser.add_argument("--corruptions_root", type=str, required=True,
-                        help="Raíz de las corrupciones (o una sola corrupción). Ej: /workspace/endovis_corruptions_test")
+                        help="Raíz de las corrupciones (o una sola corrupción).")
     parser.add_argument("--load_weights_folder", type=str, required=True,
                         help="Carpeta con encoder.pth y depth.pth")
 
-    # EndoVIS-style splits_dir + split_name
     parser.add_argument("--splits_dir", type=str, default=os.path.join(os.path.dirname(__file__), "splits"),
-                        help="Directorio donde viven los splits (para EndoVIS) o donde está test_files2 (Hamlyn).")
+                        help="Directorio donde viven los splits (EndoVIS) o donde está test_files2 (Hamlyn).")
     parser.add_argument("--split", type=str, default="endovis",
-                        help="Nombre del split (carpeta dentro de splits/) para EndoVIS. Para Hamlyn puedes dejarlo default.")
+                        help="Nombre del split (carpeta dentro de splits/) para EndoVIS. Para Hamlyn puede ignorarse.")
 
-    # Overrides explícitos (recomendado para Hamlyn)
     parser.add_argument("--split_file", type=str, default=None,
-                        help="Path explícito al split (override). Ej: /workspace/datasets/hamlyn/splits/test_files2.txt")
+                        help="Path explícito al split (override).")
     parser.add_argument("--gt_depths_file", type=str, default=None,
-                        help="Path explícito al gt_depths npz (override). Ej: /workspace/datasets/hamlyn/splits/test_files2_gt_depths.npz")
+                        help="Path explícito al gt_depths npz (override).")
 
     parser.add_argument("--num_layers", type=int, default=18)
     parser.add_argument("--height", type=int, default=256)
@@ -529,16 +511,30 @@ def main():
     parser.add_argument("--strict", action="store_true",
                         help="Modo estricto: exige que todas las entradas del split existan en cada severidad.")
 
-    # EndoVIS subdir dentro de severity
     parser.add_argument("--endovis_data_subdir", type=str, default="endovis_data",
-                        help="Solo EndoVIS: subdirectorio dentro de severity_*/ (default: endovis_data).")
+                        help="Solo EndoVIS: subdirectorio dentro de severity_*/")
+
+    # ✅ Nuevo: depth range configurable
+    parser.add_argument("--min_depth", type=float, default=None,
+                        help="Min depth para el mask. Si no se da, usa default por dataset.")
+    parser.add_argument("--max_depth", type=float, default=None,
+                        help="Max depth para el mask. Si no se da, usa default por dataset.")
 
     args = parser.parse_args()
+
+    # Defaults por dataset
+    if args.min_depth is None or args.max_depth is None:
+        if args.dataset_type == "hamlyn":
+            args.min_depth = 1.0 if args.min_depth is None else args.min_depth
+            args.max_depth = 300.0 if args.max_depth is None else args.max_depth
+        else:
+            args.min_depth = 1e-3 if args.min_depth is None else args.min_depth
+            args.max_depth = 150.0 if args.max_depth is None else args.max_depth
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     cv2.setNumThreads(0)
 
-    # Cargar split y GTs (según dataset_type)
+    # Cargar split y GTs
     test_files, gt_depths, used_split, used_gt = _load_split_and_gt(
         dataset_type=args.dataset_type,
         splits_dir=args.splits_dir,
@@ -549,6 +545,7 @@ def main():
     print("-> split_file:", used_split)
     print("-> gt_depths :", used_gt)
     print("-> #samples :", len(test_files))
+    print(f"-> Depth range: min_depth={args.min_depth}, max_depth={args.max_depth}")
 
     # Configuración mono/estéreo
     disable_median_scaling = args.eval_stereo
@@ -577,13 +574,10 @@ def main():
         for sev in severities:
             if args.dataset_type == "endovis":
                 data_root = os.path.join(corr_dir, sev, args.endovis_data_subdir)
-                pretty_root = data_root
             else:
-                # Hamlyn: la raíz útil es el severity folder (adentro vive rectifiedXX/...)
                 data_root = os.path.join(corr_dir, sev)
-                pretty_root = data_root
 
-            print(f"\n>> {corr_name} / {sev} :: data_path = {pretty_root}")
+            print(f"\n>> {corr_name} / {sev} :: data_path = {data_root}")
             if not os.path.isdir(data_root):
                 print(f"   [WARN] No existe {data_root}, se omite.")
                 continue
@@ -604,6 +598,8 @@ def main():
                         pred_depth_scale_factor=pred_depth_scale_factor,
                         strict=args.strict,
                         device=device,
+                        min_depth=args.min_depth,
+                        max_depth=args.max_depth,
                     )
                 else:
                     mean_errors = evaluate_one_root_hamlyn(
@@ -620,6 +616,8 @@ def main():
                         pred_depth_scale_factor=pred_depth_scale_factor,
                         strict=args.strict,
                         device=device,
+                        min_depth=args.min_depth,
+                        max_depth=args.max_depth,
                     )
 
                 abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3 = mean_errors.tolist()
@@ -634,7 +632,6 @@ def main():
             except Exception as e:
                 print(f"   [ERROR] {e}")
 
-    # Guardar CSV y resumen
     if rows:
         header = ["corruption", "severity", "abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3"]
         with open(args.output_csv, "w", newline="") as f:
