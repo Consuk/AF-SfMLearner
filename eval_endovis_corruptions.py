@@ -460,16 +460,13 @@ def _load_split_and_gt(dataset_type, splits_dir, split_name, split_file, gt_dept
         if dataset_type == "endovis":
             split_file = os.path.join(splits_dir, split_name, "test_files.txt")
         else:
-            # hamlyn default
-            split_file = os.path.join(splits_dir, "test_files2.txt") if os.path.isdir(splits_dir) and not os.path.isdir(os.path.join(splits_dir, split_name)) \
-                else os.path.join(splits_dir, split_name, "test_files2.txt")
+            split_file = os.path.join(splits_dir, split_name, "test_files2.txt")
 
     if gt_depths_file is None:
         if dataset_type == "endovis":
             gt_depths_file = os.path.join(splits_dir, split_name, "gt_depths.npz")
         else:
-            gt_depths_file = os.path.join(splits_dir, "test_files2_gt_depths.npz") if os.path.isdir(splits_dir) and not os.path.isdir(os.path.join(splits_dir, split_name)) \
-                else os.path.join(splits_dir, split_name, "test_files2_gt_depths.npz")
+            gt_depths_file = os.path.join(splits_dir, split_name, "test_files2_gt_depths.npz")
 
     if not os.path.isfile(split_file):
         raise FileNotFoundError(f"No se encontró split_file: {split_file}")
@@ -477,7 +474,14 @@ def _load_split_and_gt(dataset_type, splits_dir, split_name, split_file, gt_dept
         raise FileNotFoundError(f"No se encontró gt_depths_file: {gt_depths_file}")
 
     files = readlines(split_file)
-    gt_depths = np.load(gt_depths_file, fix_imports=True, encoding="latin1")["data"]
+
+    # ✅ allow_pickle=True para object arrays (listas de mapas de profundidad)
+    npz = np.load(gt_depths_file, allow_pickle=True, fix_imports=True, encoding="latin1")
+    if "data" in npz.files:
+        gt_depths = npz["data"]
+    else:
+        # fallback por si el npz tiene otra key
+        gt_depths = npz[npz.files[0]]
 
     # Alinear longitudes para evitar out-of-bounds
     n_files = len(files)
@@ -489,6 +493,7 @@ def _load_split_and_gt(dataset_type, splits_dir, split_name, split_file, gt_dept
         gt_depths = gt_depths[:n]
 
     return files, gt_depths, split_file, gt_depths_file
+
 
 
 def main():
