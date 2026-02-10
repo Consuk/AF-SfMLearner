@@ -2,7 +2,7 @@ import pandas as pd
 
 # --- CONFIGURACIÓN ---
 # Reemplaza por la ruta real de tu CSV
-csv_path = "hamlyn_corruptions_summary_monodepth.csv"
+csv_path = "hamlyn_corruptions_summary_AF.csv"
 
 # Lee el archivo (asegúrate de que tiene encabezados como los que mostraste)
 df = pd.read_csv(csv_path)
@@ -26,5 +26,5 @@ if "corruption" in df.columns:
     print(avg_per_corr)
 
     # Guarda tabla resumen
-    avg_per_corr.to_csv("corruption_averages_hamlyn_monodepth.csv", index=False)
+    avg_per_corr.to_csv("corruption_averages_hamlyn_AF.csv", index=False)
     print("\nPromedios por corrupción guardados en 'corruption_averages.csv'")
