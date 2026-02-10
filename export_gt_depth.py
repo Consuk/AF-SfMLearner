@@ -120,7 +120,7 @@ def export_gt_depths():
                 depth_base = os.path.join(seq_path, depth_sub)
 
             fname = f"{frame_id:010d}"
-            exts = [".tiff", ".tif", ".png", ".jpg", ".jpeg"]
+            exts = [".png", ".tiff", ".tif", ".jpg", ".jpeg"]
 
             candidates = []
             for ext in exts:
