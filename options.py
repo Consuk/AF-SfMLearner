@@ -235,6 +235,15 @@ class MonodepthOptions:
                                  type=int,
                                  default=10,
                                  help="max +/- index search for nearest neighbor frame when strict neighbor mode is enabled")
+        self.parser.add_argument("--eval_filelist",
+                                 type=str,
+                                 default=None,
+                                 help="Optional: path to a custom test file list (e.g., test_files2.txt). If set, overrides splits/<eval_split>/test_files.txt")
+        self.parser.add_argument("--gt_depths_path",
+                                 type=str,
+                                 default=None,
+                                 help="Optional: path to a custom gt_depths.npz. If not set, uses splits/<eval_split>/gt_depths.npz")
+
 
     def parse(self):
         self.options = self.parser.parse_args()

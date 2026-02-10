@@ -124,7 +124,13 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
 
         print(f"-> Loading weights from {opt.load_weights_folder}")
 
-        filenames = readlines(os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
+        custom_list = getattr(opt, "eval_filelist", None)
+        if custom_list is not None:
+            custom_list = os.path.expanduser(custom_list)
+            print(f"-> Using custom eval file list: {custom_list}")
+            filenames = readlines(custom_list)
+        else:
+            filenames = readlines(os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
         dataset = build_eval_dataset(opt, filenames)
 
         batch_size = int(getattr(opt, "eval_batch_size", 16))
@@ -186,7 +192,12 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
         print("-> Evaluation disabled. Done.")
         return {}
 
-    gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
+    custom_gt = getattr(opt, "gt_depths_path", None)
+    if custom_gt is not None:
+        gt_path = os.path.expanduser(custom_gt)
+        print(f"-> Using custom gt_depths.npz: {gt_path}")
+    else:
+        gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
     if not os.path.exists(gt_path):
         raise FileNotFoundError(f"gt_depths.npz not found: {gt_path}")
 
