@@ -31,6 +31,13 @@ STEREO_SCALE_FACTOR = 5.4
 
 def compute_errors(gt, pred):
     """Computation of error metrics between predicted and ground truth depths."""
+    gt = np.asarray(gt, dtype=np.float64)
+    pred = np.asarray(pred, dtype=np.float64)
+
+    eps = 1e-6
+    gt = np.clip(gt, eps, None)
+    pred = np.clip(pred, eps, None)
+
     thresh = np.maximum((gt / pred), (pred / gt))
 
     a1 = (thresh < 1.25).mean()
@@ -44,6 +51,7 @@ def compute_errors(gt, pred):
     sq_rel = np.mean(((gt - pred) ** 2) / gt)
 
     return abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
+
 
 
 def colormap(inputs, normalize=True, torch_transpose=True):
@@ -228,6 +236,12 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
 
     for i in range(num_pred):
         gt_depth = gt_depths[i]
+        gt_depth = np.asarray(gt_depth)
+        if gt_depth.dtype == object:
+            gt_depth = gt_depth.astype(np.float32)
+        else:
+            gt_depth = gt_depth.astype(np.float32, copy=False)
+
         gt_height, gt_width = gt_depth.shape[:2]
 
         pred_disp = pred_disps[i]
@@ -239,6 +253,13 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
 
         pred_depth = pred_depth[mask] * pred_depth_scale_factor
         gt = gt_depth[mask]
+        gt = np.asarray(gt, dtype=np.float32)
+        pred_depth = np.asarray(pred_depth, dtype=np.float32)
+
+        if gt.size == 0:
+            # Nothing valid under (MIN_DEPTH, MAX_DEPTH) mask; skip this sample
+            continue
+
 
         if not disable_median_scaling:
             ratio = np.median(gt) / np.median(pred_depth)
