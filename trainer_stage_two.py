@@ -117,26 +117,74 @@ class Trainer:
         print("Training is using:\n  ", self.device)
 
         # data
-        datasets_dict = {"endovis": datasets.SCAREDRAWDataset, "hamlyn": datasets.HamlynDataset}
-        self.dataset = datasets_dict[self.opt.dataset]
+        if not hasattr(datasets, "dataset_dict"):
+            raise ValueError("The 'datasets' package does not define dataset_dict.")
+        if self.opt.dataset not in datasets.dataset_dict:
+            raise ValueError(
+                f"Unknown dataset '{self.opt.dataset}'. Available: {list(datasets.dataset_dict.keys())}"
+            )
+        self.dataset = datasets.dataset_dict[self.opt.dataset]
 
-        fpath = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "{}_files.txt")
-        train_filenames = readlines(fpath.format("train"))
-        val_filenames = readlines(fpath.format("val"))
-        img_ext = '.jpg'  
+        splits_base = getattr(self.opt, "split_root", None)
+        if not splits_base:
+            splits_base = os.path.join(os.path.dirname(__file__), "splits")
+        split_dir = resolve_split_dir(self.opt.split, splits_base)
+
+        fpath = os.path.join(split_dir, "{}_files.txt")
+        train_path = fpath.format("train")
+        val_path = fpath.format("val")
+        test_path = fpath.format("test")
+
+        train_filenames = readlines(train_path)
+        try:
+            val_filenames = readlines(val_path)
+            if len(val_filenames) == 0:
+                raise FileNotFoundError("val_files.txt is empty")
+        except Exception:
+            if os.path.exists(test_path):
+                print(
+                    f"[WARN] No valid val_files.txt found for split '{self.opt.split}'. "
+                    "Using test_files.txt as validation."
+                )
+                val_filenames = readlines(test_path)
+            else:
+                print(
+                    f"[WARN] No valid val_files.txt or test_files.txt found for split "
+                    f"'{self.opt.split}'. Using train as validation (NOT recommended)."
+                )
+                val_filenames = train_filenames
+
+        if self.opt.dataset == "c3vd":
+            img_ext = ".png"
+        else:
+            img_ext = ".png" if self.opt.png else ".jpg"
+
+        dataset_kwargs = {}
+        if self.opt.dataset == "c3vd":
+            dataset_kwargs["intrinsics_file"] = getattr(self.opt, "c3vd_intrinsics_file", None)
 
         num_train_samples = len(train_filenames)
         self.num_total_steps = num_train_samples // self.opt.batch_size * self.opt.num_epochs
 
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext)
+            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext, **dataset_kwargs)
+
+        if self.opt.dataset == "hamlyn":
+            train_dataset.strict_neighbors = bool(getattr(self.opt, "hamlyn_strict_neighbors", False))
+            train_dataset.neighbor_search_max = int(getattr(self.opt, "neighbor_search_max", 10))
+
         self.train_loader = DataLoader(
             train_dataset, self.opt.batch_size, True,
             num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
         val_dataset = self.dataset(
             self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext)
+            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext, **dataset_kwargs)
+
+        if self.opt.dataset == "hamlyn":
+            val_dataset.strict_neighbors = bool(getattr(self.opt, "hamlyn_strict_neighbors", False))
+            val_dataset.neighbor_search_max = int(getattr(self.opt, "neighbor_search_max", 10))
+
         self.val_loader = DataLoader(
             val_dataset, self.opt.batch_size, False,
             num_workers=1, pin_memory=True, drop_last=True)
@@ -464,10 +512,10 @@ class Trainer:
         """
         self.set_eval()
         try:
-            inputs = self.val_iter.next()
+            inputs = next(self.val_iter)
         except StopIteration:
             self.val_iter = iter(self.val_loader)
-            inputs = self.val_iter.next()
+            inputs = next(self.val_iter)
 
         with torch.no_grad():
             outputs, losses = self.process_batch_val(inputs)

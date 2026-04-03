@@ -151,34 +151,94 @@ class Trainer:
         self.max_depth = self.opt.max_depth
 
         # data
-        datasets_dict = {"endovis": datasets.SCAREDRAWDataset, "hamlyn": datasets.HamlynDataset}
-        self.dataset = datasets_dict[self.opt.dataset]
+        if not hasattr(datasets, "dataset_dict"):
+            raise ValueError("The 'datasets' package does not define dataset_dict.")
+        if self.opt.dataset not in datasets.dataset_dict:
+            raise ValueError(
+                f"Unknown dataset '{self.opt.dataset}'. Available: {list(datasets.dataset_dict.keys())}"
+            )
+        self.dataset = datasets.dataset_dict[self.opt.dataset]
 
-        fpath = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "{}_files.txt")
-        train_filenames = readlines(fpath.format("train"))
+        splits_base = getattr(self.opt, "split_root", None)
+        if not splits_base:
+            splits_base = os.path.join(os.path.dirname(__file__), "splits")
+        split_dir = resolve_split_dir(self.opt.split, splits_base)
 
-        # Some Hamlyn splits don't ship a val_files.txt. If it's missing, fall back to test_files.txt.
+        fpath = os.path.join(split_dir, "{}_files.txt")
+        train_path = fpath.format("train")
+        val_path = fpath.format("val")
+        test_path = fpath.format("test")
+
+        train_filenames = readlines(train_path)
+
+        # Some splits don't ship a val_files.txt. If missing, fall back to test_files.txt.
         try:
-            val_filenames = readlines(fpath.format("val"))
+            val_filenames = readlines(val_path)
             if len(val_filenames) == 0:
                 raise FileNotFoundError("val_files.txt is empty")
         except Exception:
-            test_path = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "test_files.txt")
             if os.path.exists(test_path):
-                print(f"[WARN] No valid val_files.txt found for split '{self.opt.split}'. Using test_files.txt as validation.")
+                print(
+                    f"[WARN] No valid val_files.txt found for split '{self.opt.split}'. "
+                    "Using test_files.txt as validation."
+                )
                 val_filenames = readlines(test_path)
             else:
-                print(f"[WARN] No valid val_files.txt or test_files.txt found for split '{self.opt.split}'. Using train as validation (NOT recommended).")
+                print(
+                    f"[WARN] No valid val_files.txt or test_files.txt found for split "
+                    f"'{self.opt.split}'. Using train as validation (NOT recommended)."
+                )
                 val_filenames = train_filenames
 
-        img_ext = '.png' if self.opt.png else '.jpg'
+        if self.opt.dataset == "c3vd":
+            img_ext = ".png"
+        else:
+            img_ext = ".png" if self.opt.png else ".jpg"
+
+        dataset_kwargs = {}
+        if self.opt.dataset == "c3vd":
+            dataset_kwargs["intrinsics_file"] = getattr(self.opt, "c3vd_intrinsics_file", None)
 
         num_train_samples = len(train_filenames)
         self.num_total_steps = num_train_samples // self.opt.batch_size * self.opt.num_epochs
 
+        # Low /dev/shm can cause dataloader worker crashes in containers. Auto-adjust workers.
+        requested_workers = int(getattr(self.opt, "num_workers", 12))
+        self.loader_num_workers = requested_workers
+        self.loader_pin_memory = (self.device.type == "cuda")
+        shm_gb = None
+
+        if requested_workers > 0 and os.name != "nt":
+            try:
+                shm_stat = os.statvfs("/dev/shm")
+                shm_bytes = int(shm_stat.f_frsize * shm_stat.f_bavail)
+                shm_gb = shm_bytes / float(1024 ** 3)
+                if shm_bytes < 512 * 1024 ** 2:
+                    self.loader_num_workers = 0
+                elif shm_bytes < 2 * 1024 ** 3 and requested_workers > 2:
+                    self.loader_num_workers = 2
+            except Exception:
+                pass
+
+        if self.loader_num_workers == 0:
+            self.loader_pin_memory = False
+
+        if self.loader_num_workers != requested_workers:
+            shm_msg = f"{shm_gb:.2f} GB" if shm_gb is not None else "unknown"
+            print(
+                "[dataloader] Low shared memory detected "
+                f"(/dev/shm ~= {shm_msg}). Auto-adjusting num_workers: "
+                f"{requested_workers} -> {self.loader_num_workers}"
+            )
+
+        print(
+            f"[dataloader] num_workers={self.loader_num_workers}, "
+            f"pin_memory={self.loader_pin_memory}"
+        )
+
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext)
+            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext, **dataset_kwargs)
 
         # Hamlyn ENDO-DAC-style neighbor snapping (optional)
         if self.opt.dataset == "hamlyn":
@@ -187,11 +247,11 @@ class Trainer:
 
         self.train_loader = DataLoader(
             train_dataset, self.opt.batch_size, True,
-            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
+            num_workers=self.loader_num_workers, pin_memory=self.loader_pin_memory, drop_last=True)
 
         val_dataset = self.dataset(
             self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext)
+            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext, **dataset_kwargs)
 
         if self.opt.dataset == "hamlyn":
             val_dataset.strict_neighbors = bool(getattr(self.opt, "hamlyn_strict_neighbors", False))
@@ -199,7 +259,7 @@ class Trainer:
 
         self.val_loader = DataLoader(
             val_dataset, self.opt.batch_size, False,
-            num_workers=1, pin_memory=True, drop_last=True)
+            num_workers=self.loader_num_workers, pin_memory=self.loader_pin_memory, drop_last=True)
         self.val_iter = iter(self.val_loader)
 
         # keep references for debugging / logging
@@ -324,6 +384,7 @@ class Trainer:
                     # We need a weights folder to evaluate against.
                     self.save_model()
                 weights_folder = os.path.join(self.log_path, "models", f"weights_{self.epoch}")
+                self.evaluate_each_epoch_if_enabled(weights_folder)
 
     def evaluate_each_epoch_if_enabled(self, weights_folder):
         """Runs depth evaluation using gt_depths.npz (e.g., Hamlyn) and logs metrics."""
@@ -331,9 +392,12 @@ class Trainer:
             return
 
         # Quick existence checks (avoid crashing mid-training)
-        splits_dir = os.path.join(os.path.dirname(__file__), "splits")
-        gt_path = os.path.join(splits_dir, self.opt.eval_split, "gt_depths.npz")
-        test_path = os.path.join(splits_dir, self.opt.eval_split, "test_files.txt")
+        split_root = getattr(self.opt, "split_root", None)
+        if not split_root:
+            split_root = os.path.join(os.path.dirname(__file__), "splits")
+        split_dir = resolve_split_dir(self.opt.eval_split, split_root)
+        gt_path = os.path.join(split_dir, "gt_depths.npz")
+        test_path = os.path.join(split_dir, "test_files.txt")
         if not os.path.exists(gt_path):
             print(f"[WARN] eval_each_epoch is set but gt file not found: {gt_path}. Skipping evaluation.")
             return
@@ -362,6 +426,7 @@ class Trainer:
             max_depth=float(getattr(self.opt, "max_depth", 150.0)),
             data_path=self.opt.data_path,
             eval_split=self.opt.eval_split,
+            split_root=split_root,
             png=bool(getattr(self.opt, "png", False)),
             num_workers=int(getattr(self.opt, "num_workers", 4)),
             eval_batch_size=int(getattr(self.opt, "eval_batch_size", 16)),
@@ -371,6 +436,11 @@ class Trainer:
             eval_out_dir=None,
             height=int(getattr(self.opt, "height", 256)),
             width=int(getattr(self.opt, "width", 320)),
+            eval_filelist=getattr(self.opt, "eval_filelist", None),
+            gt_depths_path=getattr(self.opt, "gt_depths_path", None),
+            c3vd_intrinsics_file=getattr(self.opt, "c3vd_intrinsics_file", None),
+            c3vd_eval_min_depth=float(getattr(self.opt, "c3vd_eval_min_depth", 0.1)),
+            c3vd_eval_max_depth=float(getattr(self.opt, "c3vd_eval_max_depth", 100.0)),
         )
 
         metrics = eval_depth.evaluate(

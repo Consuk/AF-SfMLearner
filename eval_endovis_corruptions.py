@@ -5,9 +5,14 @@ import csv
 import argparse
 from collections import defaultdict
 
-import cv2
 import numpy as np
 import torch
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
+from PIL import Image
 
 import networks
 import datasets
@@ -20,7 +25,7 @@ STEREO_SCALE_FACTOR = 5.4
 
 
 def compute_errors(gt, pred):
-    """Métricas estándar de profundidad."""
+    """Metricas estandar de profundidad."""
     thresh = np.maximum((gt / pred), (pred / gt))
     a1 = (thresh < 1.25).mean()
     a2 = (thresh < 1.25 ** 2).mean()
@@ -32,6 +37,14 @@ def compute_errors(gt, pred):
     sq_rel = np.mean(((gt - pred) ** 2) / gt)
 
     return abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
+
+
+def resize_2d(array_2d, out_w, out_h):
+    if cv2 is not None:
+        return cv2.resize(array_2d, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+    pil_img = Image.fromarray(np.asarray(array_2d, dtype=np.float32), mode="F")
+    pil_img = pil_img.resize((out_w, out_h), Image.BILINEAR)
+    return np.array(pil_img, dtype=np.float32)
 
 
 def load_model(load_weights_folder, num_layers, device):
@@ -61,9 +74,9 @@ def load_model(load_weights_folder, num_layers, device):
     return encoder, depth_decoder
 
 
-def build_dataset(dataset_name, data_path_root, filenames, height, width, png=False):
+def build_dataset(dataset_name, data_path_root, filenames, height, width, png=False, c3vd_intrinsics_file=None):
     """
-    Construye el dataset correcto según el nombre indicado.
+    Construye el dataset correcto segun el nombre indicado.
     """
     img_ext = ".png" if png else ".jpg"
 
@@ -91,6 +104,19 @@ def build_dataset(dataset_name, data_path_root, filenames, height, width, png=Fa
             img_ext=img_ext,
         )
 
+    if dataset_name.lower() == "c3vd":
+        return datasets.C3VDDataset(
+            data_path_root,
+            filenames,
+            height,
+            width,
+            [0],
+            4,
+            is_train=False,
+            img_ext=".png",
+            intrinsics_file=c3vd_intrinsics_file,
+        )
+
     raise ValueError(f"Dataset no soportado: {dataset_name}")
 
 
@@ -111,17 +137,18 @@ def evaluate_one_root(
     min_depth=1e-3,
     max_depth=150.0,
     device="cuda",
+    c3vd_intrinsics_file=None,
 ):
-    """
-    Evalúa una raíz concreta.
-
-    Para Hamlyn, data_path_root debe ser la carpeta de severidad, por ejemplo:
-      /workspace/datasets/hamlyn/hamlyn_corruptions_test24/brightness/severity_1
-
-    y HamlynDataset resolverá dinámicamente:
-      rectified24 -> rectified24/rectified24 -> image01/image02
-    """
-    dataset = build_dataset(dataset_name, data_path_root, filenames, height, width, png=png)
+    """Evalua una raiz concreta."""
+    dataset = build_dataset(
+        dataset_name,
+        data_path_root,
+        filenames,
+        height,
+        width,
+        png=png,
+        c3vd_intrinsics_file=c3vd_intrinsics_file,
+    )
 
     preds_list = []
     kept_indices = []
@@ -212,7 +239,7 @@ def evaluate_one_root(
         gt_h, gt_w = gt_depth.shape[:2]
 
         pred_disp = pred_disps[i]
-        pred_disp = cv2.resize(pred_disp, (gt_w, gt_h))
+        pred_disp = resize_2d(pred_disp, gt_w, gt_h)
         pred_depth = 1.0 / (pred_disp + 1e-8)
 
         mask = np.logical_and(gt_depth > min_depth, gt_depth < max_depth)
@@ -237,20 +264,20 @@ def evaluate_one_root(
         errors.append(compute_errors(gd, pd))
 
     if len(errors) == 0:
-        raise RuntimeError(f"No se pudieron calcular métricas válidas en {data_path_root}")
+        raise RuntimeError(f"No se pudieron calcular metricas validas en {data_path_root}")
 
     if not disable_median_scaling and len(ratios) > 0:
         ratios = np.array(ratios)
         med = np.median(ratios)
         print(f"    Scaling ratios | med: {med:0.3f} | std: {np.std(ratios / med):0.3f}")
 
-    return np.array(errors).mean(0)
+    return np.array(errors).mean(0), len(errors)
 
 
 def list_corruption_dirs(root):
     """
-    Si root ya apunta a una sola corrupción (contiene severity_*), devuelve [root].
-    Si root contiene múltiples corrupciones, devuelve sus subdirectorios.
+    Si root ya apunta a una sola corrupcion (contiene severity_*), devuelve [root].
+    Si root contiene multiples corrupciones, devuelve sus subdirectorios.
     """
     if not os.path.isdir(root):
         return []
@@ -284,15 +311,17 @@ def main():
     parser = argparse.ArgumentParser("Evaluate Hamlyn/EndoVIS corruptions")
 
     parser.add_argument("--corruptions_root", type=str, required=True,
-                        help="Raíz de corrupciones o carpeta de una corrupción")
+                        help="Raiz de corrupciones o carpeta de una corrupcion")
     parser.add_argument("--load_weights_folder", type=str, required=True,
                         help="Carpeta con encoder.pth y depth.pth")
     parser.add_argument("--splits_dir", type=str, default=os.path.join(os.path.dirname(__file__), "splits"))
     parser.add_argument("--split", type=str, default="hamlyn",
                         help="Nombre del split dentro de splits/")
     parser.add_argument("--dataset", type=str, default="hamlyn",
-                        choices=["hamlyn", "endovis", "scared"],
+                        choices=["hamlyn", "endovis", "scared", "c3vd"],
                         help="Dataset a usar para construir el loader")
+    parser.add_argument("--c3vd_intrinsics_file", type=str, default=None,
+                        help="Ruta opcional de intrinsecos para C3VD")
     parser.add_argument("--data_subdir", type=str, default="",
                         help="Subcarpeta dentro de severity_X para datasets no-Hamlyn. "
                              "Para Hamlyn ya no hace falta.")
@@ -312,26 +341,33 @@ def main():
     parser.add_argument("--run_name", type=str, default="hamlyn_corruptions_eval",
                         help="Nombre base de la corrida/salida")
     parser.add_argument("--output_dir", type=str, default="eval_outputs",
-                        help="Directorio donde se guardarán los CSV")
+                        help="Directorio donde se guardaran los CSV")
     parser.add_argument("--summary_filename", type=str, default="summary_by_severity.csv",
                         help="Nombre del CSV principal")
     parser.add_argument("--per_corruption_filename", type=str, default="summary_by_corruption.csv",
-                        help="Nombre del CSV con promedio por corrupción")
+                        help="Nombre del CSV con promedio por corrupcion")
     parser.add_argument("--global_avg_filename", type=str, default="global_average.csv",
                         help="Nombre del CSV con promedio global")
 
     args = parser.parse_args()
 
-    cv2.setNumThreads(0)
+    if args.dataset.lower() == "c3vd":
+        if args.min_depth == 1.0:
+            args.min_depth = 0.1
+        if args.max_depth == 50.0:
+            args.max_depth = 100.0
+
+    if cv2 is not None:
+        cv2.setNumThreads(0)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     test_files_path = os.path.join(args.splits_dir, args.split, "test_files.txt")
     gt_path = os.path.join(args.splits_dir, args.split, "gt_depths.npz")
 
     if not os.path.isfile(test_files_path):
-        raise FileNotFoundError(f"No se encontró: {test_files_path}")
+        raise FileNotFoundError(f"No se encontro: {test_files_path}")
     if not os.path.isfile(gt_path):
-        raise FileNotFoundError(f"No se encontró: {gt_path}")
+        raise FileNotFoundError(f"No se encontro: {gt_path}")
 
     test_files = readlines(test_files_path)
 
@@ -349,7 +385,7 @@ def main():
     if len(test_files) != len(gt_depths):
         print(
             "[WARN] test_files y gt_depths no tienen la misma longitud. "
-            "El script seguirá y filtrará según las muestras realmente utilizables."
+            "El script seguira y filtrara segun las muestras realmente utilizables."
         )
 
     disable_median_scaling = args.eval_stereo
@@ -367,7 +403,7 @@ def main():
 
     rows = []
 
-    print("-> Iniciando evaluación")
+    print("-> Iniciando evaluacion")
     for corr_dir in corr_dirs:
         corr_name = os.path.basename(corr_dir.rstrip("/"))
 
@@ -381,8 +417,7 @@ def main():
 
         for sev in severities:
             if args.dataset.lower() == "hamlyn":
-                # Dinámico como evaluate normal:
-                # pasamos la carpeta de severidad, y HamlynDataset resuelve rectifiedXX solo
+                # Pasamos la carpeta de severidad y HamlynDataset resuelve secuencia/camara.
                 data_root = os.path.join(corr_dir, sev)
             else:
                 data_root = os.path.join(corr_dir, sev, args.data_subdir) if args.data_subdir else os.path.join(corr_dir, sev)
@@ -394,7 +429,7 @@ def main():
                 continue
 
             try:
-                mean_errors = evaluate_one_root(
+                mean_errors, n_eval = evaluate_one_root(
                     data_path_root=data_root,
                     filenames=test_files,
                     gt_depths=gt_depths,
@@ -411,13 +446,14 @@ def main():
                     min_depth=args.min_depth,
                     max_depth=args.max_depth,
                     device=device,
+                    c3vd_intrinsics_file=args.c3vd_intrinsics_file,
                 )
 
                 abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3 = mean_errors.tolist()
-                rows.append([corr_name, sev, abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3])
+                rows.append([corr_name, sev, n_eval, abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3])
 
                 print(
-                    f"   abs_rel={abs_rel:.3f} | sq_rel={sq_rel:.3f} | rmse={rmse:.3f} | "
+                    f"   n={n_eval} | abs_rel={abs_rel:.3f} | sq_rel={sq_rel:.3f} | rmse={rmse:.3f} | "
                     f"rmse_log={rmse_log:.3f} | a1={a1:.3f} | a2={a2:.3f} | a3={a3:.3f}"
                 )
 
@@ -428,41 +464,43 @@ def main():
         print("\n-> No se generaron resultados.")
         return
 
-    header = ["corruption", "severity", "abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3"]
+    header = ["corruption", "severity", "n_samples", "abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3"]
 
     summary_csv = os.path.join(run_output_dir, args.summary_filename)
     save_csv(summary_csv, header, rows)
 
     print(f"\n-> CSV principal guardado en: {summary_csv}")
 
-    # Promedio por corrupción
+    # Promedio por corrupcion
     bucket = defaultdict(list)
     for r in rows:
         bucket[r[0]].append(r)
 
     per_corr_rows = []
     for corr in sorted(bucket.keys()):
-        vals = np.array([r[2:] for r in bucket[corr]], dtype=np.float64)
-        means = vals.mean(axis=0).tolist()
-        per_corr_rows.append([corr] + means)
+        vals = np.array([r[3:] for r in bucket[corr]], dtype=np.float64)
+        weights = np.array([max(1, int(r[2])) for r in bucket[corr]], dtype=np.float64)
+        means = np.average(vals, axis=0, weights=weights).tolist()
+        per_corr_rows.append([corr, int(weights.sum())] + means)
 
-    per_corr_header = ["corruption", "abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3"]
+    per_corr_header = ["corruption", "total_samples", "abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3"]
     per_corr_csv = os.path.join(run_output_dir, args.per_corruption_filename)
     save_csv(per_corr_csv, per_corr_header, per_corr_rows)
 
-    print(f"-> Promedio por corrupción guardado en: {per_corr_csv}")
+    print(f"-> Promedio por corrupcion guardado en: {per_corr_csv}")
 
     # Promedio global
-    all_vals = np.array([r[2:] for r in rows], dtype=np.float64)
-    global_means = all_vals.mean(axis=0).tolist()
+    all_vals = np.array([r[3:] for r in rows], dtype=np.float64)
+    all_weights = np.array([max(1, int(r[2])) for r in rows], dtype=np.float64)
+    global_means = np.average(all_vals, axis=0, weights=all_weights).tolist()
     global_csv = os.path.join(run_output_dir, args.global_avg_filename)
-    save_csv(global_csv, per_corr_header, [["global"] + global_means])
+    save_csv(global_csv, per_corr_header, [["global", int(all_weights.sum())] + global_means])
 
     print(f"-> Promedio global guardado en: {global_csv}")
 
     print("\n======= RESUMEN =======")
     print("Archivo principal:", summary_csv)
-    print("Por corrupción   :", per_corr_csv)
+    print("Por corrupcion   :", per_corr_csv)
     print("Global           :", global_csv)
 
 

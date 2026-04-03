@@ -1,8 +1,13 @@
 from __future__ import absolute_import, division, print_function
 
 import os
-import cv2
 import numpy as np
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
+from PIL import Image
 
 import torch
 from torch.utils.data import DataLoader
@@ -10,7 +15,7 @@ from torch.utils.data import DataLoader
 import datasets
 import networks
 from layers import disp_to_depth
-from utils import readlines
+from utils import readlines, resolve_split_dir
 
 import matplotlib.pyplot as plt
 
@@ -19,9 +24,10 @@ try:
 except Exception:
     wandb = None
 
-_DEPTH_COLORMAP = plt.get_cmap('plasma', 256)  # for plotting
+_DEPTH_COLORMAP = plt.get_cmap("plasma", 256)
 
-cv2.setNumThreads(0)  # speeds up eval on unix systems
+if cv2 is not None:
+    cv2.setNumThreads(0)
 
 splits_dir = os.path.join(os.path.dirname(__file__), "splits")
 
@@ -52,6 +58,14 @@ def compute_errors(gt, pred):
 
     return abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
 
+
+def resize_2d(array_2d, out_w, out_h):
+    if cv2 is not None:
+        return cv2.resize(array_2d, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+
+    pil_img = Image.fromarray(np.asarray(array_2d, dtype=np.float32), mode="F")
+    pil_img = pil_img.resize((out_w, out_h), Image.BILINEAR)
+    return np.array(pil_img, dtype=np.float32)
 
 
 def colormap(inputs, normalize=True, torch_transpose=True):
@@ -89,11 +103,22 @@ def build_eval_dataset(opt, filenames):
     """Creates the correct dataset for evaluation."""
     height = int(getattr(opt, "height", 256))
     width = int(getattr(opt, "width", 320))
-    img_ext = ".png" if bool(getattr(opt, "png", False)) else ".jpg"
+    eval_split = str(getattr(opt, "eval_split", "")).lower()
 
-    if opt.eval_split == "hamlyn":
+    if eval_split == "c3vd":
+        img_ext = ".png"
+    else:
+        img_ext = ".png" if bool(getattr(opt, "png", False)) else ".jpg"
+
+    dataset_kwargs = {}
+
+    if eval_split == "hamlyn":
         DatasetClass = datasets.HamlynDataset
         print("-> Using HamlynDataset for evaluation")
+    elif eval_split == "c3vd":
+        DatasetClass = datasets.C3VDDataset
+        dataset_kwargs["intrinsics_file"] = getattr(opt, "c3vd_intrinsics_file", None)
+        print("-> Using C3VDDataset for evaluation")
     else:
         DatasetClass = datasets.SCAREDRAWDataset
         print(f"-> Using SCAREDRAWDataset for evaluation (eval_split={opt.eval_split})")
@@ -106,7 +131,8 @@ def build_eval_dataset(opt, filenames):
         [0],          # only current frame for eval
         4,            # num_scales
         is_train=False,
-        img_ext=img_ext
+        img_ext=img_ext,
+        **dataset_kwargs
     )
     return dataset
 
@@ -117,8 +143,18 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
     Returns:
         dict with keys: abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
     """
-    MIN_DEPTH = 1e-3
-    MAX_DEPTH = float(getattr(opt, "max_depth", 150.0))
+    eval_split = str(getattr(opt, "eval_split", "")).lower()
+    is_c3vd = eval_split == "c3vd" or str(getattr(opt, "dataset", "")).lower() == "c3vd"
+    split_root = getattr(opt, "split_root", None)
+    if not split_root:
+        split_root = splits_dir
+
+    if is_c3vd:
+        MIN_DEPTH = float(getattr(opt, "c3vd_eval_min_depth", 0.1))
+        MAX_DEPTH = float(getattr(opt, "c3vd_eval_max_depth", 100.0))
+    else:
+        MIN_DEPTH = 1e-3
+        MAX_DEPTH = float(getattr(opt, "max_depth", 150.0))
 
     assert sum((bool(getattr(opt, "eval_mono", False)), bool(getattr(opt, "eval_stereo", False)))) == 1, \
         "Choose mono or stereo evaluation: set exactly one of eval_mono/eval_stereo"
@@ -138,7 +174,8 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
             print(f"-> Using custom eval file list: {custom_list}")
             filenames = readlines(custom_list)
         else:
-            filenames = readlines(os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
+            split_dir = resolve_split_dir(opt.eval_split, split_root)
+            filenames = readlines(os.path.join(split_dir, "test_files.txt"))
         dataset = build_eval_dataset(opt, filenames)
 
         batch_size = int(getattr(opt, "eval_batch_size", 16))
@@ -163,8 +200,11 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
         encoder.load_state_dict({k: v for k, v in encoder_dict.items() if k in model_dict})
         depth_decoder.load_state_dict(torch.load(decoder_path, map_location="cpu"))
 
-        encoder.cuda().eval()
-        depth_decoder.cuda().eval()
+        device = torch.device(
+            "cuda" if torch.cuda.is_available() and not bool(getattr(opt, "no_cuda", False)) else "cpu"
+        )
+        encoder.to(device).eval()
+        depth_decoder.to(device).eval()
 
         pred_disps = []
         height = int(getattr(opt, "height", 256))
@@ -173,7 +213,10 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
 
         with torch.no_grad():
             for data in dataloader:
-                input_color = data[("color", 0, 0)].cuda(non_blocking=True)
+                input_color = data[("color", 0, 0)].to(
+                    device,
+                    non_blocking=(device.type == "cuda"),
+                )
 
                 if bool(getattr(opt, "post_process", False)):
                     input_color = torch.cat((input_color, torch.flip(input_color, [3])), 0)
@@ -205,7 +248,8 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
         gt_path = os.path.expanduser(custom_gt)
         print(f"-> Using custom gt_depths.npz: {gt_path}")
     else:
-        gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
+        split_dir = resolve_split_dir(opt.eval_split, split_root)
+        gt_path = os.path.join(split_dir, "gt_depths.npz")
     if not os.path.exists(gt_path):
         raise FileNotFoundError(f"gt_depths.npz not found: {gt_path}")
 
@@ -245,7 +289,7 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
         gt_height, gt_width = gt_depth.shape[:2]
 
         pred_disp = pred_disps[i]
-        pred_disp_resized = cv2.resize(pred_disp, (gt_width, gt_height), interpolation=cv2.INTER_LINEAR)
+        pred_disp_resized = resize_2d(pred_disp, gt_width, gt_height)
 
         pred_depth = 1.0 / np.maximum(pred_disp_resized, 1e-6)
 
@@ -259,7 +303,6 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
         if gt.size == 0:
             # Nothing valid under (MIN_DEPTH, MAX_DEPTH) mask; skip this sample
             continue
-
 
         if not disable_median_scaling:
             ratio = np.median(gt) / np.median(pred_depth)
@@ -280,6 +323,12 @@ def evaluate(opt, global_step=None, log_to_wandb=True, max_log_images=3):
         ratios = np.array(ratios)
         med = np.median(ratios)
         print(f" Scaling ratios | med: {med:0.3f} | std: {np.std(ratios / med):0.3f}")
+
+    if len(errors) == 0:
+        raise RuntimeError(
+            "No valid depth samples were available after masking. "
+            f"Mask range was ({MIN_DEPTH}, {MAX_DEPTH})."
+        )
 
     mean_errors = np.array(errors).mean(0)
 
