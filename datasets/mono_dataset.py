@@ -81,12 +81,16 @@ class MonoDataset(data.Dataset):
             self.hue = 0.1
 
         self.resize = {}
+        self.resize_mask = {}
         for i in range(self.num_scales):
             s = 2 ** i
             self.resize[i] = transforms.Resize((self.height // s, self.width // s),
                                                interpolation=self.interp)
+            self.resize_mask[i] = transforms.Resize((self.height // s, self.width // s),
+                                                    interpolation=Image.Resampling.NEAREST)
 
         self.load_depth = self.check_depth()
+        self.load_loss_mask = self.check_loss_mask()
 
     def preprocess(self, inputs, color_aug):
         """Resize colour images to the required scales and augment if required.
@@ -100,6 +104,10 @@ class MonoDataset(data.Dataset):
                 n, im, i = k
                 for i in range(self.num_scales):
                     inputs[(n, im, i)] = self.resize[i](inputs[(n, im, i - 1)])
+            elif isinstance(k, tuple) and len(k) == 3 and k[0] == "loss_mask":
+                n, im, i = k
+                for i in range(self.num_scales):
+                    inputs[(n, im, i)] = self.resize_mask[i](inputs[(n, im, i - 1)])
 
         for k in list(inputs):
             f = inputs[k]
@@ -111,6 +119,13 @@ class MonoDataset(data.Dataset):
                     inputs[(n + "_aug", im, i)] = inputs[(n, im, i)]
                 else:
                     inputs[(n + "_aug", im, i)] = self.to_tensor(color_aug(f))
+            elif isinstance(k, tuple) and len(k) == 3 and k[0] == "loss_mask":
+                n, im, i = k
+                mask_np = np.asarray(f, dtype=np.float32)
+                if mask_np.ndim == 3:
+                    mask_np = mask_np[:, :, 0]
+                mask_np = (mask_np > 0).astype(np.float32)
+                inputs[(n, im, i)] = torch.from_numpy(mask_np).unsqueeze(0)
 
     def __len__(self):
         return len(self.filenames)
@@ -178,6 +193,10 @@ class MonoDataset(data.Dataset):
                                     f"Cannot find frame - check --data_path and split formatting. {e}"
                                 )
 
+        if self.load_loss_mask:
+            mask = self.get_loss_mask(folder, frame_index, side, do_flip)
+            inputs[("loss_mask", 0, -1)] = mask
+
         # adjusting intrinsics to match each scale in the pyramid
         for scale in range(self.num_scales):
             K = self.load_intrinsics(folder, frame_index)
@@ -202,6 +221,8 @@ class MonoDataset(data.Dataset):
         for i in self.frame_idxs:
             del inputs[("color", i, -1)]
             del inputs[("color_aug", i, -1)]
+        if self.load_loss_mask:
+            del inputs[("loss_mask", 0, -1)]
 
         return inputs
 
@@ -211,5 +232,11 @@ class MonoDataset(data.Dataset):
     def check_depth(self):
         raise NotImplementedError
 
+    def check_loss_mask(self):
+        return False
+
     def get_depth(self, folder, frame_index, side, do_flip):
+        raise NotImplementedError
+
+    def get_loss_mask(self, folder, frame_index, side, do_flip):
         raise NotImplementedError

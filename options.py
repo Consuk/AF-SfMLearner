@@ -106,6 +106,17 @@ class MonodepthOptions:
                                  type=str,
                                  default=None,
                                  help="optional path to a C3VD intrinsics file; fixed normalized K is used if missing")
+        self.parser.add_argument("--c3vd_use_loss_mask",
+                                 help="if set, load per-sequence C3VD mask.png and apply it to photometric loss",
+                                 action="store_true")
+        self.parser.add_argument("--c3vd_mask_filename",
+                                 type=str,
+                                 default="mask.png",
+                                 help="filename for per-sequence C3VD valid-region mask")
+        self.parser.add_argument("--c3vd_mask_erosion",
+                                 type=int,
+                                 default=0,
+                                 help="optional binary erosion radius (pixels) for C3VD loss mask")
         self.parser.add_argument("--batch_size",
                                  type=int,
                                  help="batch size",

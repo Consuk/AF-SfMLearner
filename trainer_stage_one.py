@@ -104,6 +104,9 @@ class Trainer:
         dataset_kwargs = {}
         if self.opt.dataset == "c3vd":
             dataset_kwargs["intrinsics_file"] = getattr(self.opt, "c3vd_intrinsics_file", None)
+            dataset_kwargs["use_loss_mask"] = bool(getattr(self.opt, "c3vd_use_loss_mask", False))
+            dataset_kwargs["mask_filename"] = str(getattr(self.opt, "c3vd_mask_filename", "mask.png"))
+            dataset_kwargs["mask_erosion"] = int(getattr(self.opt, "c3vd_mask_erosion", 0))
 
         num_train_samples = len(train_filenames)
         self.num_total_steps = num_train_samples // self.opt.batch_size * self.opt.num_epochs

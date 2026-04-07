@@ -198,6 +198,9 @@ class Trainer:
         dataset_kwargs = {}
         if self.opt.dataset == "c3vd":
             dataset_kwargs["intrinsics_file"] = getattr(self.opt, "c3vd_intrinsics_file", None)
+            dataset_kwargs["use_loss_mask"] = bool(getattr(self.opt, "c3vd_use_loss_mask", False))
+            dataset_kwargs["mask_filename"] = str(getattr(self.opt, "c3vd_mask_filename", "mask.png"))
+            dataset_kwargs["mask_erosion"] = int(getattr(self.opt, "c3vd_mask_erosion", 0))
 
         num_train_samples = len(train_filenames)
         self.num_total_steps = num_train_samples // self.opt.batch_size * self.opt.num_epochs
@@ -642,10 +645,28 @@ class Trainer:
 
         self.set_train()
 
+    def _masked_mean(self, value, mask):
+        if mask is None:
+            return value.mean()
+
+        value_mask = mask
+        if value.dim() == 3 and value_mask.dim() == 4:
+            value_mask = value_mask[:, 0, :, :]
+        elif value.dim() == 4 and value_mask.dim() == 3:
+            value_mask = value_mask.unsqueeze(1)
+
+        value_mask = value_mask.to(value.dtype)
+        denom = value_mask.sum().clamp(min=1.0)
+        return (value * value_mask).sum() / denom
+
     def compute_losses(self, inputs, outputs):
         """Compute the reprojection and smoothness losses for a minibatch"""
         losses = {}
         total_loss = 0
+        use_loss_mask = (
+            self.opt.dataset == "c3vd" and
+            bool(getattr(self.opt, "c3vd_use_loss_mask", False))
+        )
 
         for scale in self.opt.scales:
             loss = 0
@@ -654,6 +675,7 @@ class Trainer:
             disp = outputs[("disp", scale)]
             color = inputs[("color", 0, scale)]
             target = inputs[("color", 0, scale)]
+            loss_mask = inputs.get(("loss_mask", 0, scale), None) if use_loss_mask else None
 
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
@@ -688,7 +710,7 @@ class Trainer:
                 mask = outputs["predictive_mask"]
                 reprojection_loss *= mask
 
-            loss += reprojection_loss.mean()
+            loss += self._masked_mean(reprojection_loss, loss_mask)
 
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)

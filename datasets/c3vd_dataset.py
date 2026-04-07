@@ -5,6 +5,11 @@ import os
 
 import numpy as np
 from PIL import Image as pil
+from PIL import ImageFilter
+try:
+    import cv2
+except Exception:
+    cv2 = None
 
 from .mono_dataset import MonoDataset
 
@@ -28,15 +33,22 @@ class C3VDDataset(MonoDataset):
 
     def __init__(self, *args, **kwargs):
         self.intrinsics_file = kwargs.pop("intrinsics_file", None)
+        self.use_loss_mask = bool(kwargs.pop("use_loss_mask", False))
+        self.mask_filename = str(kwargs.pop("mask_filename", "mask.png"))
+        self.mask_erosion = int(kwargs.pop("mask_erosion", 0))
         super(C3VDDataset, self).__init__(*args, **kwargs)
 
         self.K = self.DEFAULT_K.copy()
         self._K_cache = {}
         self._path_cache = {}
+        self._mask_path_cache = {}
 
     def check_depth(self):
         # Self-supervised path does not require GT depth in the dataloader.
         return False
+
+    def check_loss_mask(self):
+        return bool(self.use_loss_mask)
 
     def index_to_folder_and_frame_idx(self, index):
         parts = self.filenames[index].split()
@@ -275,6 +287,71 @@ class C3VDDataset(MonoDataset):
 
         self._K_cache[folder] = K_norm
         return K_norm.copy()
+
+    def _mask_candidates(self, folder):
+        folder_norm = folder.replace("\\", "/").strip("/")
+        parts = [p for p in folder_norm.split("/") if p]
+
+        candidates = []
+
+        # Most-common locations: sequence root or sequence/masks.
+        for i in range(len(parts), 0, -1):
+            seq_rel = "/".join(parts[:i])
+            candidates.append(os.path.join(self.data_path, seq_rel, self.mask_filename))
+            candidates.append(os.path.join(self.data_path, seq_rel, "masks", self.mask_filename))
+            candidates.append(os.path.join(self.data_path, seq_rel, "mask", self.mask_filename))
+
+        candidates.append(os.path.join(self.data_path, folder_norm, self.mask_filename))
+        candidates.append(os.path.join(self.data_path, self.mask_filename))
+
+        seen = set()
+        unique = []
+        for c in candidates:
+            if not c:
+                continue
+            if c not in seen:
+                unique.append(c)
+                seen.add(c)
+        return unique
+
+    def _resolve_mask_path(self, folder):
+        if folder in self._mask_path_cache:
+            return self._mask_path_cache[folder]
+
+        for c in self._mask_candidates(folder):
+            if os.path.isfile(c):
+                self._mask_path_cache[folder] = c
+                return c
+
+        raise FileNotFoundError(
+            f"C3VD mask file '{self.mask_filename}' not found for folder='{folder}' under {self.data_path}"
+        )
+
+    def get_loss_mask(self, folder, frame_index, side, do_flip):
+        del frame_index, side
+
+        mask_path = self._resolve_mask_path(folder)
+        with pil.open(mask_path) as m:
+            mask = m.convert("L")
+
+        mask_np = (np.asarray(mask, dtype=np.uint8) > 0).astype(np.uint8) * 255
+
+        if self.mask_erosion > 0:
+            k = max(1, int(self.mask_erosion))
+            if cv2 is not None:
+                kernel = np.ones((2 * k + 1, 2 * k + 1), dtype=np.uint8)
+                mask_np = cv2.erode(mask_np, kernel, iterations=1)
+            else:
+                size = max(3, 2 * k + 1)
+                mask_np = np.asarray(
+                    pil.fromarray(mask_np, mode="L").filter(ImageFilter.MinFilter(size)),
+                    dtype=np.uint8,
+                )
+
+        mask_out = pil.fromarray(mask_np, mode="L")
+        if do_flip:
+            mask_out = mask_out.transpose(pil.FLIP_LEFT_RIGHT)
+        return mask_out
 
     def get_depth(self, folder, frame_index, side, do_flip):
         raise NotImplementedError("C3VD self-supervised training does not use depth in the dataloader.")
